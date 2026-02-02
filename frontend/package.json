@@ -1,0 +1,49 @@
+{
+  "name": "okx-quant-frontend",
+  "version": "0.1.0",
+  "description": "OKX Quantitative Trading System - Frontend",
+  "main": "src/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && electron . 2>nul",
+    "build": "vite build && npm run build:electron",
+    "build:electron": "electron-builder",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "echarts": "^5.4.3",
+    "pinia": "^2.1.7",
+    "vue": "^3.3.8",
+    "vue-router": "^4.2.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.5.0",
+    "concurrently": "^8.2.2",
+    "electron": "^27.1.0",
+    "electron-builder": "^24.9.1",
+    "vite": "^5.0.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.okxquant.app",
+    "productName": "OKX Quantitative Trading",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/main/**/*",
+      "src/preload/**/*",
+      "dist-renderer/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "src/renderer/assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "src/renderer/assets/icon.icns"
+    }
+  }
+}
