@@ -239,6 +239,10 @@ class DataFetcher:
             candles = []
             for item in result["data"]:
                 # OKX返回格式: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+                # 实盘策略仅应使用已收盘K线，避免未收盘数据抖动导致误触发信号。
+                if len(item) > 8 and str(item[8]) != "1":
+                    continue
+
                 candle = Candle(
                     timestamp=int(item[0]),
                     open=float(item[1]),

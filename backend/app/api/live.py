@@ -159,7 +159,11 @@ async def get_strategy_status():
 
 
 @router.get("/orders")
-async def get_order_history(limit: int = 50, ctx: AppContext = Depends(get_ctx)):
+async def get_order_history(
+    limit: int = 50,
+    mode: str = "",
+    ctx: AppContext = Depends(get_ctx),
+):
     """
     获取策略执行的订单历史
 
@@ -170,7 +174,7 @@ async def get_order_history(limit: int = 50, ctx: AppContext = Depends(get_ctx))
     """
     try:
         storage = ctx.storage()
-        db_orders = await asyncio.to_thread(storage.get_live_orders, limit=limit)
+        db_orders = await asyncio.to_thread(storage.get_live_orders, limit=limit, mode=mode)
         return {"orders": db_orders}
     except Exception as e:
         print(f"[Live API] 获取订单历史失败: {e}")

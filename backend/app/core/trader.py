@@ -234,13 +234,19 @@ class OKXTrader:
                 error_message=str(e)
             )
 
-    def get_order(self, inst_id: str, order_id: str) -> Optional[Dict[str, Any]]:
+    def get_order(
+        self,
+        inst_id: str,
+        order_id: str = "",
+        client_order_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """
         查询单个订单详情
 
         Args:
             inst_id: 交易对
-            order_id: 订单ID
+            order_id: 订单ID（与 client_order_id 至少传一个）
+            client_order_id: 客户端订单ID
 
         Returns:
             订单详情字典，失败返回 None
@@ -249,7 +255,16 @@ class OKXTrader:
             return None
 
         try:
-            result = self._trade_api.get_order(instId=inst_id, ordId=order_id)
+            if not order_id and not client_order_id:
+                return None
+
+            params: Dict[str, Any] = {"instId": inst_id}
+            if order_id:
+                params["ordId"] = order_id
+            if client_order_id:
+                params["clOrdId"] = client_order_id
+
+            result = self._trade_api.get_order(**params)
             if result.get("code") == "0" and result.get("data"):
                 return result["data"][0]
             return None

@@ -211,6 +211,7 @@ class DataStorage:
                 CREATE TABLE IF NOT EXISTS live_order_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id TEXT,
+                    client_order_id TEXT DEFAULT '',
                     inst_id TEXT NOT NULL,
                     side TEXT NOT NULL,
                     size TEXT NOT NULL,
@@ -218,6 +219,7 @@ class DataStorage:
                     signal_type TEXT NOT NULL,
                     success INTEGER NOT NULL DEFAULT 0,
                     error_message TEXT DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT 'simulated',
                     strategy_id TEXT,
                     strategy_name TEXT,
                     ts TIMESTAMP NOT NULL,
@@ -231,6 +233,41 @@ class DataStorage:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_live_orders_strategy
                 ON live_order_records(strategy_id)
+            """)
+
+            # 数据库迁移：给已有表补字段
+            # 必须先补列，再建依赖该列的索引；否则旧库缺列时会在建索引阶段直接报错。
+            column_names = set()
+            try:
+                cursor.execute("PRAGMA table_info(live_order_records)")
+                columns = cursor.fetchall()
+                column_names = {
+                    row["name"] if isinstance(row, sqlite3.Row) else row[1]
+                    for row in columns
+                }
+            except Exception:
+                column_names = set()
+
+            if "client_order_id" not in column_names:
+                try:
+                    cursor.execute("ALTER TABLE live_order_records ADD COLUMN client_order_id TEXT DEFAULT ''")
+                except Exception:
+                    pass
+
+            if "mode" not in column_names:
+                try:
+                    cursor.execute("ALTER TABLE live_order_records ADD COLUMN mode TEXT NOT NULL DEFAULT 'simulated'")
+                except Exception:
+                    pass
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_live_orders_mode
+                ON live_order_records(mode)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_live_orders_client_id
+                ON live_order_records(client_order_id)
             """)
 
     def save_candles(
@@ -1287,6 +1324,7 @@ class DataStorage:
 
     def save_live_order(
         self,
+        *,
         order_id: str,
         inst_id: str,
         side: str,
@@ -1295,6 +1333,8 @@ class DataStorage:
         signal_type: str,
         success: bool,
         ts: str,
+        client_order_id: str = "",
+        mode: str = "simulated",
         strategy_id: str = "",
         strategy_name: str = "",
         error_message: str = ""
@@ -1320,21 +1360,22 @@ class DataStorage:
         """
         query = """
             INSERT INTO live_order_records
-            (order_id, inst_id, side, size, price, signal_type, success,
-             error_message, strategy_id, strategy_name, ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (order_id, client_order_id, inst_id, side, size, price, signal_type, success,
+             error_message, mode, strategy_id, strategy_name, ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._get_cursor() as cursor:
             cursor.execute(query, (
-                order_id, inst_id, side, size, price, signal_type,
+                order_id, client_order_id, inst_id, side, size, price, signal_type,
                 1 if success else 0, error_message,
-                strategy_id, strategy_name, ts
+                mode, strategy_id, strategy_name, ts
             ))
             return cursor.rowcount > 0
 
     def get_live_orders(
         self,
         limit: int = 50,
+        mode: str = "",
         strategy_id: str = ""
     ) -> List[Dict[str, Any]]:
         """
@@ -1347,19 +1388,21 @@ class DataStorage:
         Returns:
             订单记录列表
         """
+        conditions = []
+        params: List[Any] = []
+
         if strategy_id:
-            query = """
-                SELECT * FROM live_order_records
-                WHERE strategy_id = ?
-                ORDER BY ts DESC LIMIT ?
-            """
-            params = (strategy_id, limit)
-        else:
-            query = """
-                SELECT * FROM live_order_records
-                ORDER BY ts DESC LIMIT ?
-            """
-            params = (limit,)
+            conditions.append("strategy_id = ?")
+            params.append(strategy_id)
+        if mode:
+            conditions.append("mode = ?")
+            params.append(mode)
+
+        query = "SELECT * FROM live_order_records"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
 
         orders = []
         with self._get_cursor() as cursor:
@@ -1368,6 +1411,7 @@ class DataStorage:
                 orders.append({
                     "id": row["id"],
                     "order_id": row["order_id"],
+                    "client_order_id": row["client_order_id"] if "client_order_id" in row.keys() else "",
                     "inst_id": row["inst_id"],
                     "side": row["side"],
                     "size": row["size"],
@@ -1375,11 +1419,110 @@ class DataStorage:
                     "signal_type": row["signal_type"],
                     "success": bool(row["success"]),
                     "error_message": row["error_message"],
+                    "mode": row["mode"] if "mode" in row.keys() else "",
                     "strategy_id": row["strategy_id"],
                     "strategy_name": row["strategy_name"],
                     "timestamp": row["ts"],
                 })
         return orders
+
+    def get_unreconciled_live_orders(
+        self,
+        mode: str,
+        inst_id: str = "",
+        strategy_id: str = "",
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取待补偿同步的实时订单记录。
+
+        判定规则：success=1 且 error_message 含“补偿同步”但不含“完成”。
+        """
+        query = """
+            SELECT * FROM live_order_records
+            WHERE success = 1
+              AND mode = ?
+              AND error_message LIKE '%补偿同步%'
+              AND error_message NOT LIKE '%补偿同步完成%'
+        """
+        params: List[Any] = [mode]
+
+        if inst_id:
+            query += " AND inst_id = ?"
+            params.append(inst_id)
+        if strategy_id:
+            query += " AND strategy_id = ?"
+            params.append(strategy_id)
+
+        query += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+
+        rows: List[Dict[str, Any]] = []
+        with self._get_cursor() as cursor:
+            cursor.execute(query, tuple(params))
+            for row in cursor.fetchall():
+                rows.append({
+                    "id": row["id"],
+                    "order_id": row["order_id"],
+                    "client_order_id": row["client_order_id"] if "client_order_id" in row.keys() else "",
+                    "inst_id": row["inst_id"],
+                    "side": row["side"],
+                    "size": row["size"],
+                    "price": row["price"],
+                    "signal_type": row["signal_type"],
+                    "success": bool(row["success"]),
+                    "error_message": row["error_message"],
+                    "mode": row["mode"] if "mode" in row.keys() else "",
+                    "strategy_id": row["strategy_id"],
+                    "strategy_name": row["strategy_name"],
+                    "timestamp": row["ts"],
+                })
+        return rows
+
+    def update_live_order_execution(
+        self,
+        *,
+        size: str,
+        price: str,
+        order_id: str = "",
+        client_order_id: str = "",
+        mode: str = "",
+        error_message: str = "",
+    ) -> bool:
+        """
+        更新实时订单的执行结果（补偿同步场景）。
+
+        Args:
+            order_id: 订单ID（与 client_order_id 至少传一个）
+            client_order_id: 客户端订单ID
+            mode: simulated/live
+            size: 累计成交数量
+            price: 最新成交均价
+            error_message: 补充说明
+
+        Returns:
+            是否成功更新
+        """
+        if not order_id and not client_order_id:
+            return False
+
+        query = "UPDATE live_order_records SET size = ?, price = ?, error_message = ? WHERE "
+        params: List[Any] = [size, price, error_message]
+
+        if order_id:
+            query += "order_id = ?"
+            params.append(order_id)
+        else:
+            query += "client_order_id = ?"
+            params.append(client_order_id)
+
+        if mode:
+            query += " AND mode = ?"
+            params.append(mode)
+
+        with self._get_cursor() as cursor:
+            cursor.execute(query, tuple(params))
+            return cursor.rowcount > 0
 
     def close(self):
         """关闭数据库连接"""
