@@ -15,8 +15,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .config import config, DATA_DIR, CONFIG_DIR
-from .api import market, backtest, trading, live, preferences, websocket
+from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner
 from .core.app_context import get_app_context
+from .core.assistant_patrol import get_assistant_patrol
+from .core.data_guardian import get_data_guardian
 from .strategies import discover_strategies, load_external_strategies, get_strategy_count
 
 # 记录启动时间
@@ -94,6 +96,11 @@ def _validate_config():
     if config.cache.sync_cooldown < 60:
         warnings.append(f"同步冷却时间 {config.cache.sync_cooldown}秒 过短，可能导致频繁同步")
 
+    if config.ai_assistant.enabled and not config.ai_assistant.is_configured():
+        warnings.append(
+            "AI 助手未完整配置（可在设置页填写 AI Key / 模型），行情页 AI 对话将不可用"
+        )
+
     return warnings, errors
 
 
@@ -135,6 +142,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"  [!] WebSocket 启动失败: {e}")
 
+    print("-" * 50)
+    print("数据守护器:")
+    guardian = get_data_guardian(get_app_context())
+    try:
+        await guardian.start()
+        print("  [+] 本地数据守护器已启动")
+    except Exception as e:
+        print(f"  [!] 数据守护器启动失败: {e}")
+
+    print("-" * 50)
+    print("主动巡检:")
+    patrol = get_assistant_patrol(get_app_context())
+    try:
+        await patrol.start()
+        print("  [+] 机会巡检服务已启动")
+    except Exception as e:
+        print(f"  [!] 机会巡检服务启动失败: {e}")
+
     # 显示配置警告
     if warnings:
         print("-" * 50)
@@ -156,6 +181,16 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     print("正在关闭服务...")
+    try:
+        await patrol.stop()
+        print("机会巡检服务已关闭")
+    except Exception as e:
+        print(f"关闭机会巡检服务失败: {e}")
+    try:
+        await guardian.stop()
+        print("数据守护器已关闭")
+    except Exception as e:
+        print(f"关闭数据守护器失败: {e}")
     try:
         from .core.app_context import get_app_context
         await get_app_context().stop_ws()
@@ -219,6 +254,11 @@ app.include_router(trading.router)  # trading 路由已带 /api/trading 前缀
 app.include_router(live.router)     # live 路由已带 /api/live 前缀
 app.include_router(preferences.router)  # preferences 路由已带 /api/preferences 前缀
 app.include_router(websocket.router)  # WebSocket 路由 /ws 前缀
+app.include_router(assistant.router, prefix="/api")  # AI 助手路由 /api/assistant 前缀
+app.include_router(agent.router, prefix="/api")  # Agent 查询/分析路由 /api/agent 前缀
+app.include_router(journal.router)  # 交易日志路由 /api/journal 前缀
+app.include_router(risk.router)  # 风险指标路由 /api/risk 前缀
+app.include_router(scanner.router)  # 市场扫描路由 /api/scanner 前缀
 
 
 # 根路由
@@ -381,6 +421,103 @@ class OKXConfigRequest(BaseModel):
     use_simulated: bool = True
 
 
+class AIAssistantConfigRequest(BaseModel):
+    """AI 助手配置请求模型。"""
+    enabled: bool = True
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    model: str = "gpt-4.1-mini"
+    provider_name: str = "OpenAI-Compatible"
+
+
+def _mask_key(key: str) -> str:
+    """遮蔽密钥，只显示前4位和后4位"""
+    if not key or len(key) < 10:
+        return "*" * len(key) if key else ""
+    return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
+def _load_env_lines(env_path: Path) -> list[str]:
+    """读取 .env 文本行，保留注释与原始顺序。"""
+    if not env_path.exists():
+        return []
+    with open(env_path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\n\r") for line in f]
+
+
+def _sanitize_secret_value(field_name: str, incoming: str, existing: str) -> str:
+    """处理密钥字段的“空值保留 / 遮蔽值保留”逻辑。"""
+    value = (incoming or "").strip()
+    if not value:
+        return existing
+    if "*" in value:
+        if existing:
+            return existing
+        raise ValueError(f"{field_name} 为遮蔽值，请输入真实密钥")
+    return value
+
+
+def _apply_env_updates(
+    existing_lines: list[str],
+    *,
+    updates: dict[str, str],
+    remove_keys: set[str] | None = None,
+    append_sections: list[tuple[str, list[str]]] | None = None,
+) -> list[str]:
+    """更新 .env 配置项，同时尽量保留原有结构和注释。"""
+    updated_keys = set()
+    new_lines: list[str] = []
+    normalized_remove_keys = set(remove_keys or set())
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}")
+                updated_keys.add(key)
+                continue
+            if key in normalized_remove_keys:
+                continue
+        new_lines.append(line)
+
+    remaining_keys = [key for key in updates.keys() if key not in updated_keys]
+    if not remaining_keys:
+        return new_lines
+
+    remaining_key_set = set(remaining_keys)
+    sections = append_sections or [("", remaining_keys)]
+    for header, keys in sections:
+        section_keys = [key for key in keys if key in remaining_key_set]
+        if not section_keys:
+            continue
+        if new_lines and new_lines[-1] != "":
+            new_lines.append("")
+        if header:
+            new_lines.append(header)
+        for key in section_keys:
+            new_lines.append(f"{key}={updates[key]}")
+            remaining_key_set.discard(key)
+
+    for key in remaining_keys:
+        if key not in remaining_key_set:
+            continue
+        if new_lines and new_lines[-1] != "":
+            new_lines.append("")
+        new_lines.append(f"{key}={updates[key]}")
+
+    return new_lines
+
+
+def _write_env_lines(env_path: Path, lines: list[str]) -> None:
+    """写回 .env 文件。"""
+    CONFIG_DIR.mkdir(exist_ok=True)
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        if lines:
+            f.write("\n")
+
+
 @app.get("/config/okx", tags=["配置"])
 async def get_okx_config():
     """获取OKX配置（密钥会被遮蔽）"""
@@ -400,13 +537,6 @@ async def get_okx_config():
         "use_simulated": config.okx.use_simulated,
         "is_configured": config.okx.is_valid(),
     }
-
-
-def _mask_key(key: str) -> str:
-    """遮蔽密钥，只显示前4位和后4位"""
-    if not key or len(key) < 10:
-        return "*" * len(key) if key else ""
-    return key[:4] + "*" * (len(key) - 8) + key[-4:]
 
 
 @app.post("/config/okx", tags=["配置"])
@@ -432,38 +562,19 @@ async def save_okx_config(req: OKXConfigRequest):
         print(f"[Config] 检查实时引擎状态失败: {e}")
 
     # 读取现有配置（保留注释和原始结构）
-    existing_lines = []
-    existing_keys = set()
-    if env_path.exists():
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                existing_lines.append(line.rstrip("\n\r"))
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    key = stripped.split("=", 1)[0].strip()
-                    existing_keys.add(key)
+    existing_lines = _load_env_lines(env_path)
 
     # 兼容前端“密钥遮蔽回填/密钥不回填”的行为：
     # - 请求体为空字符串：保留已有配置（避免只切换模式就把密钥清空）
     # - 请求体为遮蔽值（包含 *）：视为“未修改”，保留已有配置（避免无法同时配置模拟盘/实盘）
-    def _sanitize_credential(field_name: str, incoming: str, existing: str) -> str:
-        s = (incoming or "").strip()
-        if not s:
-            return existing
-        if "*" in s:
-            if existing:
-                return existing
-            raise ValueError(f"{field_name} 为遮蔽值，请输入真实密钥")
-        return s
-
     try:
-        demo_api_key = _sanitize_credential("demo.api_key", req.demo.api_key, config.okx.demo.api_key)
-        demo_secret_key = _sanitize_credential("demo.secret_key", req.demo.secret_key, config.okx.demo.secret_key)
-        demo_passphrase = _sanitize_credential("demo.passphrase", req.demo.passphrase, config.okx.demo.passphrase)
+        demo_api_key = _sanitize_secret_value("demo.api_key", req.demo.api_key, config.okx.demo.api_key)
+        demo_secret_key = _sanitize_secret_value("demo.secret_key", req.demo.secret_key, config.okx.demo.secret_key)
+        demo_passphrase = _sanitize_secret_value("demo.passphrase", req.demo.passphrase, config.okx.demo.passphrase)
 
-        live_api_key = _sanitize_credential("live.api_key", req.live.api_key, config.okx.live.api_key)
-        live_secret_key = _sanitize_credential("live.secret_key", req.live.secret_key, config.okx.live.secret_key)
-        live_passphrase = _sanitize_credential("live.passphrase", req.live.passphrase, config.okx.live.passphrase)
+        live_api_key = _sanitize_secret_value("live.api_key", req.live.api_key, config.okx.live.api_key)
+        live_secret_key = _sanitize_secret_value("live.secret_key", req.live.secret_key, config.okx.live.secret_key)
+        live_passphrase = _sanitize_secret_value("live.passphrase", req.live.passphrase, config.okx.live.passphrase)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"success": False, "message": str(e)})
 
@@ -481,49 +592,29 @@ async def save_okx_config(req: OKXConfigRequest):
     # 清理旧变量名（如果存在则移除）
     old_keys_to_remove = {"OKX_API_KEY", "OKX_SECRET_KEY", "OKX_PASSPHRASE", "OKX_SIMULATED"}
 
-    # 更新现有行或追加新配置
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in okx_updates:
-                new_lines.append(f"{key}={okx_updates[key]}")
-                updated_keys.add(key)
-            elif key in old_keys_to_remove:
-                # 跳过旧变量名，不再写入
-                continue
-            else:
-                new_lines.append(line)
-        else:
-            new_lines.append(line)
-
-    # 追加未出现的OKX配置项
-    missing_keys = set(okx_updates.keys()) - updated_keys
-    if missing_keys:
-        if new_lines and new_lines[-1] != "":
-            new_lines.append("")
-        new_lines.append("# OKX API 配置 - 模拟盘")
-        for key in ["OKX_DEMO_API_KEY", "OKX_DEMO_SECRET_KEY", "OKX_DEMO_PASSPHRASE"]:
-            if key in missing_keys:
-                new_lines.append(f"{key}={okx_updates[key]}")
-        new_lines.append("")
-        new_lines.append("# OKX API 配置 - 实盘")
-        for key in ["OKX_LIVE_API_KEY", "OKX_LIVE_SECRET_KEY", "OKX_LIVE_PASSPHRASE"]:
-            if key in missing_keys:
-                new_lines.append(f"{key}={okx_updates[key]}")
-        if "OKX_USE_SIMULATED" in missing_keys:
-            new_lines.append("")
-            new_lines.append("# 当前使用模式 (true=模拟盘, false=实盘)")
-            new_lines.append(f"OKX_USE_SIMULATED={okx_updates['OKX_USE_SIMULATED']}")
+    new_lines = _apply_env_updates(
+        existing_lines,
+        updates=okx_updates,
+        remove_keys=old_keys_to_remove,
+        append_sections=[
+            ("# OKX API 配置 - 模拟盘", [
+                "OKX_DEMO_API_KEY",
+                "OKX_DEMO_SECRET_KEY",
+                "OKX_DEMO_PASSPHRASE",
+            ]),
+            ("# OKX API 配置 - 实盘", [
+                "OKX_LIVE_API_KEY",
+                "OKX_LIVE_SECRET_KEY",
+                "OKX_LIVE_PASSPHRASE",
+            ]),
+            ("# 当前使用模式 (true=模拟盘, false=实盘)", [
+                "OKX_USE_SIMULATED",
+            ]),
+        ],
+    )
 
     # 写入文件（保留所有原有配置）
-    CONFIG_DIR.mkdir(exist_ok=True)
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(new_lines))
-        if new_lines:
-            f.write("\n")
+    _write_env_lines(env_path, new_lines)
 
     # 更新运行时配置
     config.okx.demo.api_key = demo_api_key
@@ -562,6 +653,73 @@ async def save_okx_config(req: OKXConfigRequest):
     return {
         "success": True,
         "message": f"配置已保存并生效（当前模式: {mode_text}）",
+    }
+
+
+@app.get("/config/assistant", tags=["配置"])
+async def get_assistant_config():
+    """获取 AI 助手配置（密钥会被遮蔽）。"""
+    return {
+        "enabled": config.ai_assistant.enabled,
+        "configured": config.ai_assistant.is_configured(),
+        "base_url": config.ai_assistant.base_url,
+        "api_key": _mask_key(config.ai_assistant.api_key),
+        "model": config.ai_assistant.model,
+        "provider_name": config.ai_assistant.provider_name,
+    }
+
+
+@app.post("/config/assistant", tags=["配置"])
+async def save_assistant_config(req: AIAssistantConfigRequest):
+    """保存 AI 助手配置到 .env，并立即更新运行时配置。"""
+    env_path = CONFIG_DIR / ".env"
+    existing_lines = _load_env_lines(env_path)
+
+    try:
+        assistant_api_key = _sanitize_secret_value(
+            "assistant.api_key",
+            req.api_key,
+            config.ai_assistant.api_key,
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"success": False, "message": str(e)})
+
+    assistant_base_url = (req.base_url or "").strip() or "https://api.openai.com/v1"
+    assistant_model = (req.model or "").strip() or "gpt-4.1-mini"
+    assistant_provider_name = (req.provider_name or "").strip() or "OpenAI-Compatible"
+
+    assistant_updates = {
+        "AI_ASSISTANT_ENABLED": "true" if req.enabled else "false",
+        "AI_ASSISTANT_BASE_URL": assistant_base_url,
+        "AI_ASSISTANT_API_KEY": assistant_api_key,
+        "AI_ASSISTANT_MODEL": assistant_model,
+        "AI_ASSISTANT_PROVIDER": assistant_provider_name,
+    }
+
+    new_lines = _apply_env_updates(
+        existing_lines,
+        updates=assistant_updates,
+        append_sections=[
+            ("# AI 助手配置", [
+                "AI_ASSISTANT_ENABLED",
+                "AI_ASSISTANT_BASE_URL",
+                "AI_ASSISTANT_API_KEY",
+                "AI_ASSISTANT_MODEL",
+                "AI_ASSISTANT_PROVIDER",
+            ]),
+        ],
+    )
+    _write_env_lines(env_path, new_lines)
+
+    config.ai_assistant.enabled = req.enabled
+    config.ai_assistant.base_url = assistant_base_url
+    config.ai_assistant.api_key = assistant_api_key
+    config.ai_assistant.model = assistant_model
+    config.ai_assistant.provider_name = assistant_provider_name
+
+    return {
+        "success": True,
+        "message": "AI 助手配置已保存并生效",
     }
 
 

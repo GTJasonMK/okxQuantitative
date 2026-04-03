@@ -1,0 +1,186 @@
+@media (max-width: 1580px) {
+  .stage-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chart-footer-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1320px) {
+  .chart-frame-header,
+  .block-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .inspector-shell {
+    min-height: 520px;
+  }
+
+  .depth-chart-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chart-inspector {
+    min-height: 0;
+  }
+
+  .chart-inspector-panel {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 960px) {
+  .stage-summary,
+  .chart-footer-strip,
+  .inspector-metric-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-canvas {
+    min-height: 360px;
+  }
+
+  .recent-trades-panel {
+    height: 380px;
+  }
+
+  .orderbook-panel {
+    height: 380px;
+  }
+
+  .orderbook-panel.is-depth-mode {
+    height: auto;
+    min-height: min(72vh, 560px);
+  }
+
+  .depth-chart-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inspector-topbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inspector-summary-chips,
+  .inspector-mode-tabs {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .orderbook-ladder-toolbar,
+  .orderbook-ladder-header,
+  .orderbook-ladder-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.88fr) minmax(0, 0.88fr) minmax(0, 1fr);
+  }
+
+  .chart-inspector {
+    width: min(92vw, 660px);
+    max-width: min(92vw, 660px);
+    right: -4px;
+  }
+
+  .chart-inspector-panel {
+    max-height: min(calc(100vh - 112px), 680px);
+  }
+
+  .depth-chart-summary-inline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chart-frame-heading-with-toolbox {
+    align-items: flex-start;
+  }
+
+  .chart-toolbox {
+    width: min(280px, calc(100vw - 40px));
+  }
+}
+
+@media (max-width: 720px) {
+  .chart-frame,
+  .inspector-shell {
+    border-radius: 20px;
+  }
+
+  .chart-canvas-immersive {
+    border-radius: 0 0 20px 20px;
+  }
+
+  .chart-frame-header,
+  .inspector-head {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .chart-footer-strip {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-bottom: 16px;
+  }
+
+  .recent-trades-header,
+  .recent-trade-row {
+    grid-template-columns: 1fr 0.8fr 1fr 0.8fr;
+  }
+
+  .orderbook-ladder-toolbar,
+  .orderbook-ladder-header,
+  .orderbook-ladder-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr) minmax(0, 0.86fr) minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .orderbook-ladder-toolbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .orderbook-ladder-header {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .orderbook-ladder-row {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .orderbook-ladder-center-meta {
+    gap: 6px;
+  }
+
+  .orderbook-ladder-step,
+  .orderbook-ladder-spread-chip {
+    min-height: 26px;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+
+  .orderbook-view-tabs {
+    flex-wrap: wrap;
+  }
+
+  .chart-toolbox-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-frame-heading-with-toolbox {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chart-toolbox {
+    width: min(252px, calc(100vw - 36px));
+  }
+
+  .chart-inspector {
+    width: min(94vw, 600px);
+    max-width: min(94vw, 600px);
+    right: -6px;
+  }
+}

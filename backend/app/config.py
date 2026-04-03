@@ -121,7 +121,34 @@ class CacheConfig:
 class StrategyPluginConfig:
     """策略插件配置"""
     # 外部策略目录（用户可放置自定义策略）
-    external_dir: Optional[Path] = None
+    external_dir: Optional[Path] = field(default_factory=lambda: BASE_DIR / "external_strategies")
+
+
+@dataclass
+class AIAssistantConfig:
+    """AI 助手配置（兼容 OpenAI Chat Completions 接口）"""
+    enabled: bool = True
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    model: str = "gpt-4.1-mini"
+    provider_name: str = "OpenAI-Compatible"
+    use_env_proxy: bool = False
+    timeout_seconds: int = 90
+    temperature: float = 0.35
+    max_context_messages: int = 12
+    max_context_candles: int = 80
+    system_prompt: str = (
+        "你是 OKX 量化终端内的 AI 市场助手。"
+        "你只能根据用户提供的行情上下文做分析，禁止虚构不存在的数据。"
+        "请始终使用简体中文，回答直接、专业、可执行。"
+        "如果上下文不足，请先指出缺失项。"
+        "当用户询问买卖建议时，请输出：结论、关键依据、关键价位、风险提示。"
+        "不要承诺收益，不要鼓励满仓、梭哈或高杠杆。"
+    )
+
+    def is_configured(self) -> bool:
+        """AI 助手是否已完整配置"""
+        return self.enabled and bool(self.base_url.strip()) and bool(self.api_key.strip()) and bool(self.model.strip())
 
 
 @dataclass
@@ -132,6 +159,7 @@ class AppConfig:
     api: APIConfig = field(default_factory=APIConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     strategy: StrategyPluginConfig = field(default_factory=StrategyPluginConfig)
+    ai_assistant: AIAssistantConfig = field(default_factory=AIAssistantConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -142,7 +170,8 @@ class AppConfig:
 
         # 处理外部策略目录
         ext_strategy_dir = os.getenv("EXTERNAL_STRATEGIES_DIR", "")
-        ext_strategy_path = Path(ext_strategy_dir) if ext_strategy_dir else None
+        ext_strategy_path = Path(ext_strategy_dir) if ext_strategy_dir else (BASE_DIR / "external_strategies")
+        ext_strategy_path.mkdir(parents=True, exist_ok=True)
 
         # 加载模拟盘密钥（优先使用新变量名，兼容旧变量名）
         demo_api_key = os.getenv("OKX_DEMO_API_KEY", "")
@@ -210,38 +239,26 @@ class AppConfig:
             ),
             strategy=StrategyPluginConfig(
                 external_dir=ext_strategy_path,
-            )
+            ),
+            ai_assistant=AIAssistantConfig(
+                enabled=os.getenv("AI_ASSISTANT_ENABLED", "true").lower() == "true",
+                base_url=os.getenv("AI_ASSISTANT_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1",
+                api_key=os.getenv("AI_ASSISTANT_API_KEY", "").strip(),
+                model=os.getenv("AI_ASSISTANT_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
+                provider_name=os.getenv("AI_ASSISTANT_PROVIDER", "OpenAI-Compatible").strip() or "OpenAI-Compatible",
+                use_env_proxy=os.getenv("AI_ASSISTANT_USE_ENV_PROXY", "false").lower() == "true",
+                timeout_seconds=max(15, int(os.getenv("AI_ASSISTANT_TIMEOUT_SECONDS", "90"))),
+                temperature=min(max(float(os.getenv("AI_ASSISTANT_TEMPERATURE", "0.35")), 0.0), 2.0),
+                max_context_messages=max(2, int(os.getenv("AI_ASSISTANT_MAX_CONTEXT_MESSAGES", "12"))),
+                max_context_candles=max(20, int(os.getenv("AI_ASSISTANT_MAX_CONTEXT_CANDLES", "80"))),
+                system_prompt=os.getenv("AI_ASSISTANT_SYSTEM_PROMPT", "").strip() or AIAssistantConfig().system_prompt,
+            ),
         )
 
 
 # 全局配置实例
 config = AppConfig.from_env()
 
-
-# 支持的时间周期
-TIMEFRAMES = {
-    "1m": "1分钟",
-    "3m": "3分钟",
-    "5m": "5分钟",
-    "15m": "15分钟",
-    "30m": "30分钟",
-    "1H": "1小时",
-    "2H": "2小时",
-    "4H": "4小时",
-    "6H": "6小时",
-    "12H": "12小时",
-    "1D": "1天",
-    "1W": "1周",
-    "1M": "1月",
-}
-
-# 支持的交易类型
-INST_TYPES = {
-    "SPOT": "现货",
-    "SWAP": "永续合约",
-    "FUTURES": "交割合约",
-    "OPTION": "期权",
-}
 
 # 常用交易对
 DEFAULT_SYMBOLS = [

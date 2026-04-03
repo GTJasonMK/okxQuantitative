@@ -1,0 +1,313 @@
+.depth-chart-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  padding: 8px 10px 10px;
+  gap: 8px;
+  min-block-size: clamp(316px, 40vh, 442px);
+}
+
+
+.depth-chart-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.depth-chart-summary-inline {
+  grid-template-columns: repeat(4, minmax(92px, 1fr));
+}
+
+.depth-chart-insights-inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.depth-chart-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.95fr);
+  gap: 10px;
+}
+
+.depth-chart-main-full {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.depth-chart-visual {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.depth-chart-visual-full {
+  min-height: clamp(284px, 34vh, 372px);
+}
+
+.depth-chart-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.depth-chart-insights {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.depth-chart-insight {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.3;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.depth-chart-insight.is-bid {
+  color: var(--color-success);
+}
+
+.depth-chart-insight.is-ask {
+  color: var(--color-danger);
+}
+
+.depth-chart-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.depth-chart-insight {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 14px;
+}
+
+.depth-chart-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  padding: 7px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+}
+
+.depth-chart-metric span {
+  color: rgba(232, 240, 248, 0.56);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.depth-chart-metric strong {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.15;
+  word-break: break-word;
+}
+
+.depth-chart-metric.is-bid strong {
+  color: var(--color-success);
+}
+
+.depth-chart-metric.is-ask strong {
+  color: var(--color-danger);
+}
+
+.depth-chart-metric.is-neutral strong {
+  color: #f4f8ff;
+}
+
+.depth-chart-canvas {
+  position: relative;
+  align-self: stretch;
+  min-height: 0;
+  height: 100%;
+  min-width: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.008), rgba(255, 255, 255, 0)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    transparent;
+  background-size: auto, 18% 100%, 100% 25%, auto;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.depth-chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.depth-chart-spread-band {
+  fill: rgba(255, 255, 255, 0.05);
+}
+
+.depth-chart-center-line {
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 6;
+}
+
+.depth-chart-hover-line {
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 6;
+}
+
+.depth-chart-hover-point {
+  stroke: rgba(8, 17, 30, 0.92);
+  stroke-width: 2;
+}
+
+.depth-chart-hover-point.is-bid {
+  fill: var(--color-success);
+}
+
+.depth-chart-hover-point.is-ask {
+  fill: var(--color-danger);
+}
+
+.depth-chart-wall-point {
+  stroke: rgba(8, 17, 30, 0.92);
+  stroke-width: 2;
+}
+
+.depth-chart-wall-point.is-bid {
+  fill: var(--color-success);
+}
+
+.depth-chart-wall-point.is-ask {
+  fill: var(--color-danger);
+}
+
+.depth-chart-base-line {
+  stroke: rgba(232, 240, 248, 0.16);
+  stroke-width: 1;
+}
+
+.depth-chart-y-grid {
+  stroke: rgba(232, 240, 248, 0.08);
+  stroke-width: 1;
+  stroke-dasharray: 3 8;
+}
+
+.depth-chart-y-label {
+  fill: rgba(232, 240, 248, 0.5);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke fill;
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 2px;
+}
+
+.depth-chart-area.is-bid {
+  fill: url(#depthBidFill);
+}
+
+.depth-chart-area.is-ask {
+  fill: url(#depthAskFill);
+}
+
+.depth-chart-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.depth-chart-line.is-bid {
+  stroke: var(--color-success);
+}
+
+.depth-chart-line.is-ask {
+  stroke: var(--color-danger);
+}
+
+.depth-chart-axis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: center;
+  color: rgba(232, 240, 248, 0.64);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.72);
+}
+
+.depth-chart-axis span:nth-child(2) {
+  text-align: center;
+}
+
+.depth-chart-axis span:last-child {
+  text-align: right;
+}
+
+.depth-chart-axis .current {
+  color: #f4f8ff;
+  font-weight: 700;
+}
+
+.depth-chart-tooltip {
+  position: absolute;
+  z-index: 3;
+  min-width: 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(6, 12, 22, 0.56);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.16);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+}
+
+.depth-chart-tooltip strong {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.depth-chart-tooltip span {
+  color: rgba(232, 240, 248, 0.7);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.depth-chart-tooltip.is-bid strong {
+  color: var(--color-success);
+}
+
+.depth-chart-tooltip.is-ask strong {
+  color: var(--color-danger);
+}

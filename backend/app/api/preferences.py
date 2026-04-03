@@ -2,20 +2,19 @@
 # 保存用户的界面设置到文件系统
 
 import asyncio
-from threading import Lock
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..config import CONFIG_DIR
-from ..utils.files import read_json_file, atomic_write_json
+from ..utils.preferences_store import (
+    delete_preference_key,
+    load_preferences,
+    merge_preferences,
+    save_preferences,
+)
 
 
 router = APIRouter(prefix="/api/preferences", tags=["preferences"])
-
-# 偏好设置文件路径
-PREFERENCES_FILE = CONFIG_DIR / "user_preferences.json"
-_PREFERENCES_LOCK = Lock()
 
 
 class PreferencesData(BaseModel):
@@ -29,52 +28,6 @@ class PreferencesData(BaseModel):
     # 交易设置
     trading_default_symbol: Optional[str] = None
     # 可扩展其他设置...
-
-
-def load_preferences() -> Dict[str, Any]:
-    """从文件加载偏好设置"""
-    return read_json_file(PREFERENCES_FILE, default={})
-
-
-def save_preferences(data: Dict[str, Any]) -> bool:
-    """保存偏好设置到文件"""
-    try:
-        # 原子写入：避免进程中断/并发写导致文件损坏
-        with _PREFERENCES_LOCK:
-            atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"[Preferences] 保存偏好设置失败: {e}")
-        return False
-
-
-def merge_preferences(partial: Dict[str, Any]) -> bool:
-    """合并更新偏好设置（原子操作，避免并发丢失更新）"""
-    try:
-        with _PREFERENCES_LOCK:
-            current = load_preferences()
-            current.update(partial)
-            atomic_write_json(PREFERENCES_FILE, current, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"[Preferences] 合并更新偏好设置失败: {e}")
-        return False
-
-
-def delete_preference_key(key: str) -> bool:
-    """删除指定键（原子操作）"""
-    try:
-        with _PREFERENCES_LOCK:
-            current = load_preferences()
-            if key not in current:
-                return True
-            del current[key]
-            atomic_write_json(PREFERENCES_FILE, current, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"[Preferences] 删除偏好设置失败: {e}")
-        return False
-
 
 @router.get("")
 async def get_preferences():

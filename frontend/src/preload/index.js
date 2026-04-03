@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 获取系统路径
   getPath: (name) => ipcRenderer.invoke('get-path', name),
 
+  // 桌面通知
+  showNotification: (payload) => ipcRenderer.invoke('show-notification', payload),
+
   // 平台信息
   platform: process.platform,
 });

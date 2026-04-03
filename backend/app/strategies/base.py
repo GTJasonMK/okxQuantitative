@@ -99,6 +99,7 @@ class Trade:
     quantity: float                     # 成交数量
     commission: float = 0.0             # 手续费
     pnl: float = 0.0                    # 该笔交易盈亏（平仓时）
+    reason: str = ""                    # 触发这笔成交的策略原因
     metadata: Dict[str, Any] = field(default_factory=dict)  # 信号元数据（用于网格等策略的状态同步）
 
     @property
@@ -126,6 +127,8 @@ class StrategyConfig:
     # 风控配置
     stop_loss: float = 0.05             # 止损比例
     take_profit: float = 0.10           # 止盈比例
+    trailing_stop: float = 0.0          # 追踪止损比例（0=禁用，如 0.03 表示从最高点回落 3% 触发）
+    trailing_stop_activation: float = 0.0  # 追踪止损激活条件（盈利达到此比例后才启用，如 0.02 表示盈利 2% 后激活）
     # 交易成本
     commission_rate: float = 0.001      # 手续费率 (0.1%)
     slippage: float = 0.0005            # 滑点 (0.05%)
@@ -271,6 +274,8 @@ class BaseStrategy(ABC):
         self._current_index = 0
         self._candles = []
         self._indicators = {}
+        # 追踪止损状态
+        self._trailing_stop_highest = 0.0  # 入场后的最高价
 
     @property
     def name(self) -> str:
@@ -330,6 +335,10 @@ class BaseStrategy(ABC):
             current_price = self._candles[index].close
             self.position.update_unrealized_pnl(current_price)
 
+            # 更新追踪止损最高价
+            if current_price > self._trailing_stop_highest:
+                self._trailing_stop_highest = current_price
+
             # 检查止损
             if self._check_stop_loss(current_price):
                 return Signal(
@@ -348,6 +357,15 @@ class BaseStrategy(ABC):
                     reason="止盈触发"
                 )
 
+            # 检查追踪止损
+            if self._check_trailing_stop(current_price):
+                return Signal(
+                    type=SignalType.SELL,
+                    price=current_price,
+                    timestamp=self._candles[index].timestamp,
+                    reason="追踪止损触发"
+                )
+
         # 生成策略信号
         return self.generate_signal(index)
 
@@ -359,6 +377,9 @@ class BaseStrategy(ABC):
             trade: 成交记录
         """
         self.trades.append(trade)
+        # 新建仓时重置追踪止损最高价
+        if trade.side == OrderSide.BUY and not self.position.is_empty:
+            self._trailing_stop_highest = trade.price
 
     def on_finish(self):
         """回测结束回调"""
@@ -381,6 +402,31 @@ class BaseStrategy(ABC):
 
         profit_ratio = (current_price - self.position.avg_price) / self.position.avg_price
         return profit_ratio >= self.config.take_profit
+
+    def _check_trailing_stop(self, current_price: float) -> bool:
+        """
+        检查是否触发追踪止损。
+
+        逻辑：
+        1. trailing_stop <= 0 表示禁用
+        2. 若设置了 trailing_stop_activation，需要盈利达到该比例后才启用
+        3. 价格从最高点回落超过 trailing_stop 比例则触发
+        """
+        if self.position.is_empty or self.config.trailing_stop <= 0 or self.position.avg_price <= 0:
+            return False
+
+        # 检查激活条件
+        if self.config.trailing_stop_activation > 0:
+            profit_ratio = (current_price - self.position.avg_price) / self.position.avg_price
+            if profit_ratio < self.config.trailing_stop_activation:
+                return False
+
+        highest = self._trailing_stop_highest
+        if highest <= 0:
+            return False
+
+        drop_ratio = (highest - current_price) / highest
+        return drop_ratio >= self.config.trailing_stop
 
     def get_indicator(self, name: str, index: int) -> Optional[float]:
         """

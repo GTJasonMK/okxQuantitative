@@ -1,71 +1,80 @@
 /* 全局样式 - OKX 量化交易系统 */
-/* 设计系统: Dark Mode (OLED) + 金色主调 + 紫色科技感 */
+/* 设计系统: Bitcoin DeFi — True Void + Bitcoin Orange + Digital Gold */
 
-/* Google Fonts - Exo 2 (科技感字体) */
-@import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&display=swap');
+/* Google Fonts — Space Grotesk (标题) + Inter (正文) + JetBrains Mono (数据) */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  /* 背景色 - 深蓝黑 OLED 友好 */
-  --bg-primary: #0F172A;
-  --bg-secondary: #1E293B;
-  --bg-tertiary: #334155;
-  --bg-hover: #475569;
-  --bg-card: rgba(30, 41, 59, 0.8);
+  /* ===== 背景 — True Void ===== */
+  --bg-primary: #030304;
+  --bg-secondary: #0F1115;
+  --bg-tertiary: #1A1D24;
+  --bg-hover: rgba(247, 147, 26, 0.08);
+  --bg-card: rgba(15, 17, 21, 0.9);
 
-  /* 文字色 */
-  --text-primary: #F8FAFC;
+  /* ===== 文字 ===== */
+  --text-primary: #FFFFFF;
   --text-secondary: #94A3B8;
   --text-muted: #64748B;
 
-  /* 边框色 */
-  --border-color: #334155;
-  --border-glow: rgba(245, 158, 11, 0.3);
+  /* ===== 边框 ===== */
+  --border-color: #1E293B;
+  --border-glow: rgba(247, 147, 26, 0.3);
 
-  /* 主色 - 金色 (信任感) */
-  --accent-color: #F59E0B;
-  --accent-hover: #D97706;
-  --accent-bg: rgba(245, 158, 11, 0.1);
-  --accent-glow: rgba(245, 158, 11, 0.4);
+  /* ===== 主色 — Bitcoin Orange ===== */
+  --accent-color: #F7931A;
+  --accent-hover: #EA580C;
+  --accent-bg: rgba(247, 147, 26, 0.1);
+  --accent-glow: rgba(247, 147, 26, 0.4);
 
-  /* 辅色 - 紫色 (科技感) */
-  --secondary-color: #8B5CF6;
-  --secondary-hover: #7C3AED;
-  --secondary-bg: rgba(139, 92, 246, 0.1);
-  --secondary-glow: rgba(139, 92, 246, 0.4);
+  /* ===== 辅色 — Burnt Orange ===== */
+  --secondary-color: #EA580C;
+  --secondary-hover: #C2410C;
+  --secondary-bg: rgba(234, 88, 12, 0.1);
+  --secondary-glow: rgba(234, 88, 12, 0.4);
 
-  /* 状态色 */
+  /* ===== 金色 — Digital Gold ===== */
+  --gold-color: #FFD600;
+  --gold-bg: rgba(255, 214, 0, 0.1);
+  --gold-glow: rgba(255, 214, 0, 0.3);
+
+  /* ===== 状态色 ===== */
   --color-success: #22C55E;
   --color-danger: #EF4444;
-  --color-warning: #F59E0B;
+  --color-warning: #F7931A;
   --color-info: #3B82F6;
 
-  /* K线颜色 - 更鲜艳 */
+  /* ===== K 线颜色 ===== */
   --candle-up: #22C55E;
   --candle-down: #EF4444;
 
-  /* 字体 */
-  --font-family: 'Exo 2', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* ===== 字体 ===== */
+  --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --font-family: var(--font-body);
 
-  /* 圆角 */
+  /* ===== 圆角 ===== */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+  --radius-pill: 999px;
 
-  /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 20px var(--accent-glow);
+  /* ===== 阴影 — 橙色/金色色调，无纯黑 ===== */
+  --shadow-sm: 0 1px 3px rgba(247, 147, 26, 0.06);
+  --shadow-md: 0 4px 12px rgba(247, 147, 26, 0.08);
+  --shadow-lg: 0 10px 30px rgba(247, 147, 26, 0.12);
+  --shadow-glow: 0 0 20px rgba(247, 147, 26, 0.4);
+  --shadow-glow-gold: 0 0 20px rgba(255, 214, 0, 0.3);
 
-  /* 过渡 */
+  /* ===== 过渡 ===== */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;
   --transition-slow: 300ms ease;
 }
 
-/* 重置样式 */
+/* ===== 重置 ===== */
 * {
   margin: 0;
   padding: 0;
@@ -74,7 +83,7 @@
 
 html, body {
   height: 100%;
-  font-family: var(--font-family);
+  font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.5;
   background-color: var(--bg-primary);
@@ -88,44 +97,38 @@ html, body {
   height: 100%;
 }
 
-/* 滚动条样式 - 更精致 */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
+/* ===== 字体工具类 ===== */
+.font-heading { font-family: var(--font-heading); }
+.font-body { font-family: var(--font-body); }
+.font-mono { font-family: var(--font-mono); }
 
-::-webkit-scrollbar-track {
-  background: var(--bg-primary);
-}
+/* ===== 滚动条 — 精致暗色 ===== */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1E293B; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-color); }
 
-::-webkit-scrollbar-thumb {
-  background: var(--bg-tertiary);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-color);
-}
-
-/* 选中文本样式 */
+/* ===== 选中文本 ===== */
 ::selection {
-  background: var(--accent-bg);
+  background: rgba(247, 147, 26, 0.25);
   color: var(--accent-color);
 }
 
-/* 通用卡片样式 - 移除 backdrop-filter 提升滚动性能 */
+/* ========================================
+   卡片 — "区块" 概念
+======================================== */
 .card {
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 16px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-  will-change: transform;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
 }
 
 .card:hover {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.1);
+  border-color: rgba(247, 147, 26, 0.35);
+  box-shadow: 0 0 30px -10px rgba(247, 147, 26, 0.15);
+  transform: translateY(-1px);
 }
 
 .card-header {
@@ -136,7 +139,8 @@ html, body {
 }
 
 .card-title {
-  font-size: 14px;
+  font-family: var(--font-heading);
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -145,84 +149,88 @@ html, body {
   gap: 8px;
 }
 
-/* 按钮样式 - 现代感 */
+/* 玻璃卡片 */
+.glass {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ========================================
+   按钮 — 药丸形，发光
+======================================== */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
-  font-family: var(--font-family);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  font-family: var(--font-body);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-pill);
   background: var(--bg-tertiary);
   color: var(--text-primary);
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  transition: all 0.3s ease;
   outline: none;
+  min-height: 36px;
 }
 
 .btn:hover {
-  background: var(--bg-hover);
-  border-color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
   transform: translateY(-1px);
 }
 
-.btn:active {
-  transform: translateY(0);
-}
+.btn:active { transform: translateY(0); }
 
 .btn:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-color);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
   transform: none;
 }
 
-.btn-sm {
-  padding: 6px 12px;
-  font-size: 12px;
-}
+.btn-sm { padding: 5px 12px; font-size: 12px; min-height: 30px; }
+.btn-xs { padding: 3px 10px; font-size: 11px; min-height: 26px; }
+.btn-lg { padding: 12px 28px; font-size: 15px; min-height: 44px; }
 
-.btn-lg {
-  padding: 12px 24px;
-  font-size: 15px;
-}
-
-/* 主要按钮 - 金色渐变 */
+/* 主要按钮 — Bitcoin 橙渐变 + 发光 */
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-hover) 100%);
-  border-color: var(--accent-color);
+  background: linear-gradient(135deg, #EA580C 0%, #F7931A 100%);
+  border-color: transparent;
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  box-shadow: 0 0 20px -5px rgba(234, 88, 12, 0.5);
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, var(--accent-hover) 0%, #B45309 100%);
-  border-color: var(--accent-hover);
-  box-shadow: var(--shadow-glow);
+  box-shadow: 0 0 30px -5px rgba(247, 147, 26, 0.6);
+  transform: scale(1.03);
 }
 
-/* 辅助按钮 - 紫色 */
+/* 辅助按钮 — Burnt Orange */
 .btn-secondary {
-  background: linear-gradient(135deg, var(--secondary-color) 0%, var(--secondary-hover) 100%);
-  border-color: var(--secondary-color);
+  background: linear-gradient(135deg, #C2410C 0%, #EA580C 100%);
+  border-color: transparent;
   color: #fff;
 }
 
 .btn-secondary:hover {
-  box-shadow: 0 0 20px var(--secondary-glow);
+  box-shadow: 0 0 20px rgba(234, 88, 12, 0.4);
 }
 
 /* 成功按钮 */
 .btn-success {
-  background: linear-gradient(135deg, var(--color-success) 0%, #16A34A 100%);
-  border-color: var(--color-success);
+  background: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
+  border-color: transparent;
   color: #fff;
 }
 
@@ -232,8 +240,8 @@ html, body {
 
 /* 危险按钮 */
 .btn-danger {
-  background: linear-gradient(135deg, var(--color-danger) 0%, #DC2626 100%);
-  border-color: var(--color-danger);
+  background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+  border-color: transparent;
   color: #fff;
 }
 
@@ -248,153 +256,224 @@ html, body {
 }
 
 .btn-ghost:hover {
-  background: var(--accent-bg);
-  border-color: var(--accent-color);
+  background: rgba(247, 147, 26, 0.08);
   color: var(--accent-color);
 }
 
-/* 输入框样式 */
-.input {
+/* 轮廓按钮 */
+.btn-outline {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn-outline:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* ========================================
+   输入框 — 底部边框终端风格
+======================================== */
+.input, .textarea {
   width: 100%;
   padding: 10px 14px;
   font-size: 14px;
-  font-family: var(--font-family);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-tertiary);
+  font-family: var(--font-body);
+  border: none;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.3);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.input:hover {
-  border-color: var(--text-muted);
+.input:hover, .textarea:hover {
+  border-bottom-color: rgba(255, 255, 255, 0.25);
 }
 
-.input:focus {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px var(--accent-bg);
+.input:focus, .textarea:focus {
+  border-bottom-color: var(--accent-color);
+  box-shadow: 0 10px 20px -10px rgba(247, 147, 26, 0.2);
 }
 
-.input::placeholder {
-  color: var(--text-muted);
+.input::placeholder, .textarea::placeholder {
+  color: rgba(255, 255, 255, 0.25);
 }
 
-.input:disabled {
-  opacity: 0.5;
+.input:disabled, .textarea:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
-/* 选择框样式 */
+.input-sm { padding: 6px 10px; font-size: 12px; }
+
+.textarea {
+  resize: vertical;
+  font-family: inherit;
+  min-height: 80px;
+}
+
+/* 选择框 — 保留圆角（下拉框不适合底线风格） */
 .select {
-  padding: 10px 14px;
-  font-size: 14px;
-  font-family: var(--font-family);
-  border: 1px solid var(--border-color);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: var(--font-body);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-md);
-  background: var(--bg-tertiary);
+  background: rgba(0, 0, 0, 0.4);
   color: var(--text-primary);
   outline: none;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.select:hover {
-  border-color: var(--text-muted);
-}
+.select:hover { border-color: rgba(255, 255, 255, 0.25); }
 
 .select:focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px var(--accent-bg);
+  box-shadow: 0 0 0 3px rgba(247, 147, 26, 0.15);
 }
 
-/* 表格样式 */
+.select-sm { padding: 5px 10px; font-size: 12px; }
+
+/* ========================================
+   表格 — 技术精确
+======================================== */
 .table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.table th,
-.table td {
-  padding: 12px 14px;
+.table th, .table td {
+  padding: 10px 14px;
   text-align: left;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .table th {
-  font-weight: 600;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
 }
 
-.table tr {
-  transition: background var(--transition-fast);
+.table tbody tr {
+  transition: background 0.15s ease;
 }
 
 .table tbody tr:hover {
-  background: var(--bg-hover);
+  background: rgba(247, 147, 26, 0.04);
 }
 
-/* 涨跌色 - 更鲜艳 */
-.price-up {
-  color: var(--candle-up);
-  font-weight: 500;
-}
+/* ===== 涨跌色 ===== */
+.price-up { color: var(--candle-up); font-weight: 500; }
+.price-down { color: var(--candle-down); font-weight: 500; }
 
-.price-down {
-  color: var(--candle-down);
-  font-weight: 500;
-}
-
-/* 文本颜色工具类 */
+/* ===== 文本工具类 ===== */
 .text-success { color: var(--color-success); }
 .text-danger { color: var(--color-danger); }
 .text-warning { color: var(--color-warning); }
 .text-info { color: var(--color-info); }
 .text-accent { color: var(--accent-color); }
+.text-gold { color: var(--gold-color); }
 .text-secondary-color { color: var(--secondary-color); }
 .text-muted { color: var(--text-muted); }
 
-/* 徽章样式 */
+/* ===== 渐变文字 ===== */
+.text-gradient-orange {
+  background: linear-gradient(to right, #EA580C, #F7931A);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-gradient-gold {
+  background: linear-gradient(to right, #F7931A, #FFD600);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ========================================
+   徽章
+======================================== */
 .badge {
   display: inline-flex;
   align-items: center;
   padding: 4px 10px;
+  font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 600;
-  border-radius: 20px;
-  text-transform: uppercase;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
   letter-spacing: 0.5px;
 }
 
 .badge-success {
-  background: rgba(34, 197, 94, 0.15);
+  background: rgba(34, 197, 94, 0.12);
   color: var(--color-success);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  border: 1px solid rgba(34, 197, 94, 0.25);
 }
 
 .badge-danger {
-  background: rgba(239, 68, 68, 0.15);
+  background: rgba(239, 68, 68, 0.12);
   color: var(--color-danger);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(239, 68, 68, 0.25);
 }
 
 .badge-warning {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--color-warning);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: rgba(247, 147, 26, 0.12);
+  color: var(--accent-color);
+  border: 1px solid rgba(247, 147, 26, 0.25);
 }
 
 .badge-info {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(59, 130, 246, 0.12);
   color: var(--color-info);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
-/* 加载动画 */
+/* ========================================
+   发光效果
+======================================== */
+.glow-orange {
+  box-shadow: 0 0 20px -5px rgba(234, 88, 12, 0.5);
+}
+
+.glow-gold {
+  box-shadow: 0 0 20px rgba(255, 214, 0, 0.3);
+}
+
+.glow-subtle {
+  box-shadow: 0 0 50px -10px rgba(247, 147, 26, 0.1);
+}
+
+/* ========================================
+   网格纹理背景
+======================================== */
+.bg-grid-pattern {
+  position: relative;
+}
+
+.bg-grid-pattern::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-size: 50px 50px;
+  background-image:
+    linear-gradient(to right, rgba(30, 41, 59, 0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(30, 41, 59, 0.4) 1px, transparent 1px);
+  mask-image: radial-gradient(circle at center, black 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(circle at center, black 30%, transparent 80%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ========================================
+   加载 & 动画
+======================================== */
 .loading {
   display: flex;
   align-items: center;
@@ -407,20 +486,16 @@ html, body {
 .spinner {
   width: 24px;
   height: 24px;
-  border: 2px solid var(--border-color);
+  border: 2px solid rgba(255, 255, 255, 0.08);
   border-top-color: var(--accent-color);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  will-change: transform;
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
-/* 脉冲动画 */
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -428,21 +503,38 @@ html, body {
 
 .animate-pulse {
   animation: pulse 2s ease-in-out infinite;
-  will-change: opacity;
 }
 
-/* 发光动画 */
 @keyframes glow {
-  0%, 100% { box-shadow: 0 0 5px var(--accent-glow); }
-  50% { box-shadow: 0 0 20px var(--accent-glow); }
+  0%, 100% { box-shadow: 0 0 8px rgba(247, 147, 26, 0.3); }
+  50% { box-shadow: 0 0 25px rgba(247, 147, 26, 0.5); }
 }
 
 .animate-glow {
-  animation: glow 2s ease-in-out infinite;
-  will-change: box-shadow;
+  animation: glow 2.5s ease-in-out infinite;
 }
 
-/* 空状态 */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes pulse-ping {
+  0% { transform: scale(1); opacity: 1; }
+  75%, 100% { transform: scale(2); opacity: 0; }
+}
+
+.animate-ping {
+  animation: pulse-ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* ========================================
+   空状态 & 分割线 & 表单
+======================================== */
 .empty {
   display: flex;
   flex-direction: column;
@@ -452,96 +544,153 @@ html, body {
   color: var(--text-secondary);
 }
 
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.3;
-}
+.empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.2; }
+.empty-text { font-size: 14px; }
 
-.empty-text {
-  font-size: 14px;
-}
-
-/* 分割线 */
 .divider {
   height: 1px;
-  background: var(--border-color);
+  background: rgba(255, 255, 255, 0.06);
   margin: 16px 0;
 }
 
-/* 表单组 */
-.form-group {
-  margin-bottom: 16px;
-}
+.form-group { margin-bottom: 16px; }
 
 .form-group label {
   display: block;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   margin-bottom: 6px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
 }
 
-/* 输入组 */
-.input-group {
-  display: flex;
-  gap: 8px;
-}
+.input-group { display: flex; gap: 8px; }
+.input-group .input { flex: 1; }
 
-.input-group .input {
-  flex: 1;
-}
-
-/* 状态徽章 */
+/* ===== 状态徽章 ===== */
 .status-badge {
   display: inline-flex;
   align-items: center;
   padding: 4px 10px;
+  font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 600;
-  border-radius: 20px;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
 }
 
 .status-badge.success {
-  background: rgba(34, 197, 94, 0.15);
+  background: rgba(34, 197, 94, 0.12);
   color: var(--color-success);
 }
 
 .status-badge.warning {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--color-warning);
+  background: rgba(247, 147, 26, 0.12);
+  color: var(--accent-color);
 }
 
 .status-badge.error {
-  background: rgba(239, 68, 68, 0.15);
+  background: rgba(239, 68, 68, 0.12);
   color: var(--color-danger);
 }
 
-/* 响应式减少动画 */
+/* ===== 响应式减少动画 ===== */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 
-/* 焦点可见性 */
+/* ===== 焦点可见性 ===== */
 :focus-visible {
   outline: 2px solid var(--accent-color);
   outline-offset: 2px;
 }
 
-/* 隐藏滚动条但保留功能 */
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+/* ===== 隐藏滚动条 ===== */
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* ========================================
+   玻璃拟态 — 毛玻璃浮层
+======================================== */
+.holographic-gradient {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
+/* ========================================
+   渐变边框模拟
+======================================== */
+.border-gradient-orange {
+  position: relative;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.border-gradient-orange::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(234, 88, 12, 0.4), rgba(247, 147, 26, 0.2));
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ========================================
+   径向发光背景
+======================================== */
+.bg-radial-orange {
+  position: relative;
+}
+
+.bg-radial-orange::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  right: -10%;
+  width: 40%;
+  height: 60%;
+  background: radial-gradient(circle, rgba(247, 147, 26, 0.08) 0%, transparent 70%);
+  filter: blur(60px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ========================================
+   角落装饰边框 — "选中节点"效果
+======================================== */
+.corner-accent {
+  position: relative;
+}
+
+.corner-accent::before,
+.corner-accent::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+.corner-accent::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid var(--accent-color);
+  border-left: 2px solid var(--accent-color);
+  border-radius: var(--radius-sm) 0 0 0;
+}
+
+.corner-accent::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid var(--accent-color);
+  border-right: 2px solid var(--accent-color);
+  border-radius: 0 0 var(--radius-sm) 0;
 }

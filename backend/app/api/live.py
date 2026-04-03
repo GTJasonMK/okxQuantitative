@@ -34,6 +34,7 @@ class StartStrategyRequest(BaseModel):
 class StrategyStatusResponse(BaseModel):
     """策略状态响应"""
     status: str
+    mode: str = ""
     strategy_id: str
     strategy_name: str
     symbol: str
@@ -115,6 +116,7 @@ async def start_strategy(
             account=ctx.account(mode),
             candle_manager=ctx.manager(),
             storage=ctx.storage(),
+            price_fetcher=ctx.fetcher(),
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"引擎启动失败: {str(e)}")

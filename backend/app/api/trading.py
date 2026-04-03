@@ -3,12 +3,15 @@
 # 支持通过 mode 参数指定使用模拟盘或实盘
 
 import asyncio
+import csv
+import io
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from .deps import get_ctx, require_current_mode
 from ..core.holdings import build_holdings_base, build_spot_holdings
+from ..core.risk_control import get_risk_control_store, build_risk_summary, evaluate_order_risk
 from ..utils.mode import normalize_mode
 from ..utils.numbers import require_positive_decimal_str, require_positive_int_str
 
@@ -24,6 +27,14 @@ def get_account(mode: str):
 
 def get_cached_storage():
     return get_ctx().storage()
+
+
+def get_fetcher():
+    return get_ctx().fetcher()
+
+
+def get_risk_store():
+    return get_risk_control_store()
 
 
 # 保持现有代码习惯：仍使用 config 变量名
@@ -119,6 +130,14 @@ class FillItem(BaseModel):
     fee: str           # 手续费
     fee_ccy: str       # 手续费币种
     ts: str            # 成交时间
+
+
+class RiskControlConfigRequest(BaseModel):
+    """风控配置更新请求"""
+    enabled: bool = Field(default=True, description="是否启用风控")
+    max_single_loss_ratio: float = Field(default=0.02, ge=0, le=1, description="单笔最大亏损比例")
+    default_stop_loss_ratio: float = Field(default=0.03, ge=0, le=1, description="默认止损比例")
+    max_total_position_ratio: float = Field(default=1.0, ge=0, le=10, description="总风险敞口上限")
 
 
 def validate_mode(mode: str) -> str:
@@ -321,8 +340,11 @@ async def place_order(request: PlaceOrderRequest):
     mode = validate_mode(request.mode)
     require_current_mode(mode, action="现货下单")
     trader = get_trader(mode)
+    account = get_account(mode)
     if not trader.is_available:
         raise HTTPException(status_code=503, detail="交易 API 未初始化，请检查 API 密钥配置")
+    if not account.is_available:
+        raise HTTPException(status_code=503, detail="账户 API 未初始化，请检查 API 密钥配置")
 
     # 验证参数
     if request.side not in ("buy", "sell"):
@@ -345,6 +367,19 @@ async def place_order(request: PlaceOrderRequest):
             price_str = require_positive_decimal_str(price_str)
         except ValueError:
             raise HTTPException(status_code=400, detail="price 必须是正数")
+
+    risk_result = await asyncio.to_thread(
+        evaluate_order_risk,
+        account=account,
+        fetcher=get_fetcher(),
+        inst_id=request.inst_id,
+        inst_type="SPOT",
+        side=request.side,
+        size=float(size_str),
+        price=float(price_str) if price_str else None,
+    )
+    if not risk_result.get("allowed", True):
+        raise HTTPException(status_code=400, detail=f"风控拒绝下单: {risk_result['message']}")
 
     result = await asyncio.to_thread(
         trader.place_order,
@@ -621,6 +656,68 @@ async def get_trading_status(mode: str = Query(default="simulated", description=
     }
 
 
+@router.get("/risk-control")
+async def get_risk_control(mode: str = Query(default="simulated", description="交易模式: simulated 或 live")):
+    """
+    获取统一风控配置。
+    """
+    mode = validate_mode(mode)
+    config_data = await asyncio.to_thread(get_risk_store().get_config_dict)
+    return {
+        "mode": mode,
+        "config": config_data,
+    }
+
+
+@router.put("/risk-control")
+async def update_risk_control(request: RiskControlConfigRequest):
+    """
+    更新统一风控配置。
+    """
+    config_data = await asyncio.to_thread(get_risk_store().update_config, request.model_dump())
+    return {
+        "success": True,
+        "message": "风控配置已更新",
+        "config": config_data,
+    }
+
+
+@router.get("/risk-summary")
+async def get_risk_summary_api(mode: str = Query(default="simulated", description="交易模式: simulated 或 live")):
+    """
+    获取风险摘要，包括权益、风险敞口和浮盈浮亏。
+    """
+    mode = validate_mode(mode)
+    account = get_account(mode)
+    if not account.is_available:
+        raise HTTPException(status_code=503, detail="账户 API 未初始化，请检查 API 密钥配置")
+
+    try:
+        storage = get_cached_storage()
+
+        def _load_risk_summary():
+            cost_data = storage.get_cost_basis(mode)
+            return build_risk_summary(
+                account=account,
+                fetcher=get_fetcher(),
+                cost_data=cost_data,
+            )
+
+        summary, config_data = await asyncio.gather(
+            asyncio.to_thread(_load_risk_summary),
+            asyncio.to_thread(get_risk_store().get_config_dict),
+        )
+    except Exception as e:
+        print(f"[Trading API] 获取风险摘要失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取风险摘要失败: {str(e)}")
+
+    return {
+        "mode": mode,
+        "config": config_data,
+        "summary": summary,
+    }
+
+
 # ========== 成本基础相关 API ==========
 
 class UpdateCostBasisRequest(BaseModel):
@@ -823,6 +920,113 @@ async def get_local_fills(
         raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
 
 
+@router.get("/performance")
+async def get_trade_performance(
+    mode: str = Query(default="simulated", description="交易模式: simulated 或 live"),
+    inst_id: str = Query(default="", description="按交易对过滤"),
+):
+    """
+    获取成交绩效统计。
+
+    返回：
+    - 概览指标
+    - 按日汇总
+    - 按月汇总
+    - 最近已实现盈亏交易
+    """
+    mode = validate_mode(mode)
+
+    try:
+        storage = get_cached_storage()
+
+        def _load_performance():
+            daily = storage.get_trade_performance(mode=mode, inst_id=inst_id, group_by="day")
+            monthly = storage.get_trade_performance(mode=mode, inst_id=inst_id, group_by="month")
+            return daily, monthly
+
+        daily, monthly = await asyncio.to_thread(_load_performance)
+        return {
+            "mode": mode,
+            "inst_id": inst_id,
+            "summary": daily["summary"],
+            "daily": daily["periods"],
+            "monthly": monthly["periods"],
+            "recent_trades": daily["recent_trades"],
+        }
+    except Exception as e:
+        print(f"[Trading API] 获取绩效统计失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取绩效统计失败: {str(e)}")
+
+
+@router.get("/performance/export")
+async def export_trade_performance_csv(
+    mode: str = Query(default="simulated", description="交易模式: simulated 或 live"),
+    inst_id: str = Query(default="", description="按交易对过滤"),
+):
+    """
+    导出绩效统计 CSV。
+    """
+    mode = validate_mode(mode)
+
+    try:
+        storage = get_cached_storage()
+
+        def _load_performance():
+            daily = storage.get_trade_performance(mode=mode, inst_id=inst_id, group_by="day")
+            monthly = storage.get_trade_performance(mode=mode, inst_id=inst_id, group_by="month")
+            return daily, monthly
+
+        daily, monthly = await asyncio.to_thread(_load_performance)
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["Summary"])
+        writer.writerow(["metric", "value"])
+        for key, value in daily["summary"].items():
+            writer.writerow([key, value])
+
+        writer.writerow([])
+        writer.writerow(["Daily"])
+        writer.writerow(["period", "realized_pnl", "turnover", "trade_count", "winning_trades", "losing_trades", "win_rate"])
+        for row in daily["periods"]:
+            writer.writerow([
+                row["period"],
+                row["realized_pnl"],
+                row["turnover"],
+                row["trade_count"],
+                row["winning_trades"],
+                row["losing_trades"],
+                row["win_rate"],
+            ])
+
+        writer.writerow([])
+        writer.writerow(["Monthly"])
+        writer.writerow(["period", "realized_pnl", "turnover", "trade_count", "winning_trades", "losing_trades", "win_rate"])
+        for row in monthly["periods"]:
+            writer.writerow([
+                row["period"],
+                row["realized_pnl"],
+                row["turnover"],
+                row["trade_count"],
+                row["winning_trades"],
+                row["losing_trades"],
+                row["win_rate"],
+            ])
+
+        filename_suffix = inst_id or "all"
+        csv_content = buffer.getvalue()
+        return Response(
+            content=csv_content,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="trade-performance-{mode}-{filename_suffix}.csv"'
+            },
+        )
+    except Exception as e:
+        print(f"[Trading API] 导出绩效统计失败: {e}")
+        raise HTTPException(status_code=500, detail=f"导出绩效统计失败: {str(e)}")
+
+
 # ========== 合约交易相关 API ==========
 
 class SetLeverageRequest(BaseModel):
@@ -910,8 +1114,11 @@ async def place_contract_order(req: ContractOrderRequest):
     mode = validate_mode(req.mode)
     require_current_mode(mode, action="合约下单")
     trader = get_trader(mode)
+    account = get_account(mode)
     if not trader.is_available:
         raise HTTPException(status_code=503, detail="交易 API 未初始化")
+    if not account.is_available:
+        raise HTTPException(status_code=503, detail="账户 API 未初始化")
 
     # 验证参数
     if req.side not in ("buy", "sell"):
@@ -937,6 +1144,21 @@ async def place_contract_order(req: ContractOrderRequest):
             price_str = require_positive_decimal_str(price_str)
         except ValueError:
             raise HTTPException(status_code=400, detail="price 必须是正数")
+
+    risk_result = await asyncio.to_thread(
+        evaluate_order_risk,
+        account=account,
+        fetcher=get_fetcher(),
+        inst_id=req.inst_id,
+        inst_type="SWAP" if req.inst_id.endswith("-SWAP") else "FUTURES",
+        side=req.side,
+        size=float(size_str),
+        price=float(price_str) if price_str else None,
+        reduce_only=req.reduce_only,
+        pos_side=req.pos_side,
+    )
+    if not risk_result.get("allowed", True):
+        raise HTTPException(status_code=400, detail=f"风控拒绝下单: {risk_result['message']}")
 
     result = await asyncio.to_thread(
         trader.place_contract_order,

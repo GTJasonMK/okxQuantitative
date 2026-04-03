@@ -1,6 +1,6 @@
 // Electron Main Process
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const path = require('path');
 
 // Development mode: use app.isPackaged (more reliable)
@@ -89,4 +89,20 @@ ipcMain.handle('get-app-info', () => {
 // IPC: get system path
 ipcMain.handle('get-path', (event, name) => {
   return app.getPath(name);
+});
+
+// IPC: show desktop notification
+ipcMain.handle('show-notification', (event, payload = {}) => {
+  if (!Notification.isSupported()) {
+    return { success: false, message: '当前环境不支持桌面通知' };
+  }
+
+  const notification = new Notification({
+    title: payload.title || 'OKX Quant',
+    body: payload.body || '',
+    silent: Boolean(payload.silent),
+  });
+  notification.show();
+
+  return { success: true };
 });

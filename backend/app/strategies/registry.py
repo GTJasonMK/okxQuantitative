@@ -4,11 +4,32 @@
 
 import importlib
 import importlib.util
+import hashlib
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Type, List, Optional
 
+from ..config import config
 from .base import BaseStrategy, _strategy_registry
+
+
+_external_strategy_dir: Optional[Path] = None
+_external_modules: Dict[Path, str] = {}
+
+
+def _build_external_module_name(file: Path) -> str:
+    """为外部策略文件生成稳定且不冲突的模块名。"""
+    safe_stem = re.sub(r"[^0-9a-zA-Z_]+", "_", file.stem).strip("_") or "strategy"
+    digest = hashlib.sha1(str(file.resolve()).encode("utf-8")).hexdigest()[:12]
+    return f"okx_external_{safe_stem}_{digest}"
+
+
+def _clear_external_modules():
+    """清理已加载的外部策略模块，避免删除/改名后残留旧注册。"""
+    for module_name in list(_external_modules.values()):
+        sys.modules.pop(module_name, None)
+    _external_modules.clear()
 
 
 def discover_strategies() -> int:
@@ -62,6 +83,7 @@ def reload_strategies() -> Dict[str, int]:
     strategies_dir = Path(__file__).parent
     skip_modules = {"base", "registry"}
     reloaded = 0
+    external_loaded = 0
 
     # 清空注册表（保留引用，清空内容）
     _strategy_registry.clear()
@@ -87,7 +109,13 @@ def reload_strategies() -> Dict[str, int]:
         except Exception as e:
             print(f"[错误] 重新加载策略模块 {file.name} 失败: {e}")
 
-    return {"reloaded": reloaded, "total": len(_strategy_registry)}
+    external_dir = _external_strategy_dir or config.strategy.external_dir
+    if external_dir:
+        _clear_external_modules()
+        external_loaded = load_external_strategies(Path(external_dir))
+        reloaded += external_loaded
+
+    return {"reloaded": reloaded, "external": external_loaded, "total": len(_strategy_registry)}
 
 
 def load_external_strategies(path: Path) -> int:
@@ -100,27 +128,31 @@ def load_external_strategies(path: Path) -> int:
     Returns:
         成功加载的策略数量
     """
-    if not path.exists() or not path.is_dir():
+    global _external_strategy_dir
+
+    resolved_path = Path(path).resolve()
+    _external_strategy_dir = resolved_path
+
+    if not resolved_path.exists() or not resolved_path.is_dir():
         return 0
 
     loaded = 0
 
-    # 将目录添加到 Python 路径
-    path_str = str(path.resolve())
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-
-    for file in path.glob("*.py"):
+    for file in resolved_path.glob("*.py"):
         if file.name.startswith("_"):
             continue
 
         try:
+            module_name = _build_external_module_name(file)
+            sys.modules.pop(module_name, None)
+
             # 从文件路径加载模块
-            spec = importlib.util.spec_from_file_location(file.stem, file)
+            spec = importlib.util.spec_from_file_location(module_name, file)
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
-                sys.modules[file.stem] = module
+                sys.modules[module_name] = module
                 spec.loader.exec_module(module)
+                _external_modules[file.resolve()] = module_name
                 loaded += 1
         except Exception as e:
             print(f"[错误] 加载外部策略 {file.name} 失败: {e}")

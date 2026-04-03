@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+import httpx
 
 try:
     import okx.MarketData as MarketData
@@ -15,7 +16,16 @@ except ImportError:
     OKX_AVAILABLE = False
     print("警告: python-okx 未安装，部分功能不可用。请运行: pip install python-okx")
 
-from ..config import config, TIMEFRAMES, INST_TYPES
+from ..config import config
+from ..utils.timeframes import TIMEFRAME_TO_MS
+
+
+OKX_CANDLE_PAGE_LIMIT = 300
+OKX_ORDERBOOK_STANDARD_MAX = 400
+OKX_ORDERBOOK_FULL_MAX = 5000
+OKX_PUBLIC_REST_BASE_URL = "https://www.okx.com"
+OKX_PUBLIC_HTTP_TIMEOUT = 15.0
+OKX_PUBLIC_HTTP_RETRY_COUNT = 2
 
 
 class InstType(str, Enum):
@@ -85,6 +95,7 @@ class Ticker:
         return {
             "inst_id": self.inst_id,
             "last": self.last,
+            "last_sz": self.last_sz,
             "ask_px": self.ask_px,
             "bid_px": self.bid_px,
             "open_24h": self.open_24h,
@@ -94,6 +105,88 @@ class Ticker:
             "change_24h": self.change_24h,
             "timestamp": self.timestamp,
         }
+
+
+@dataclass
+class MarketTrade:
+    """公共逐笔成交数据结构"""
+    inst_id: str       # 交易对
+    trade_id: str      # 成交ID
+    price: float       # 成交价
+    size: float        # 成交量
+    side: str          # buy/sell
+    timestamp: int     # 时间戳（毫秒）
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "inst_id": self.inst_id,
+            "trade_id": self.trade_id,
+            "price": self.price,
+            "size": self.size,
+            "side": self.side,
+            "timestamp": self.timestamp,
+        }
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """安全转换浮点数，异常时返回默认值。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """安全转换整数，异常时返回默认值。"""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_okx_candle_params(
+    inst_id: str,
+    timeframe: str,
+    limit: int,
+    after: Optional[int] = None,
+    before: Optional[int] = None,
+) -> Dict[str, str]:
+    params = {
+        "instId": inst_id,
+        "bar": timeframe,
+        "limit": str(min(limit, OKX_CANDLE_PAGE_LIMIT)),
+    }
+    if after is not None:
+        params["after"] = str(after)
+    if before is not None:
+        params["before"] = str(before)
+    return params
+
+
+def _parse_okx_candle_result(result: Dict[str, Any], error_prefix: str) -> List[Candle]:
+    if result.get("code") != "0":
+        print(f"{error_prefix}: {result.get('msg', '未知错误')}")
+        return []
+
+    candles = []
+    for item in result.get("data", []):
+        # OKX返回格式: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        # 实盘策略仅应使用已收盘K线，避免未收盘数据抖动导致误触发信号。
+        if len(item) > 8 and str(item[8]) != "1":
+            continue
+
+        candles.append(Candle(
+            timestamp=int(item[0]),
+            open=float(item[1]),
+            high=float(item[2]),
+            low=float(item[3]),
+            close=float(item[4]),
+            volume=float(item[5]),
+            volume_ccy=float(item[6]) if len(item) > 6 else 0,
+        ))
+
+    candles.reverse()
+    return candles
 
 
 class DataFetcher:
@@ -216,47 +309,14 @@ class DataFetcher:
         Returns:
             Candle列表，按时间正序排列
         """
-        if timeframe not in TIMEFRAMES:
-            print(f"不支持的时间周期: {timeframe}，支持: {list(TIMEFRAMES.keys())}")
+        if timeframe not in TIMEFRAME_TO_MS:
+            print(f"不支持的时间周期: {timeframe}，支持: {list(TIMEFRAME_TO_MS.keys())}")
             return []
 
         try:
-            params = {
-                "instId": inst_id,
-                "bar": timeframe,
-                "limit": str(min(limit, 300)),
-            }
-            if after:
-                params["after"] = str(after)
-            if before:
-                params["before"] = str(before)
-
+            params = _build_okx_candle_params(inst_id, timeframe, limit, after=after, before=before)
             result = self.market_api.get_candlesticks(**params)
-            if result["code"] != "0":
-                print(f"获取K线失败: {result.get('msg', '未知错误')}")
-                return []
-
-            candles = []
-            for item in result["data"]:
-                # OKX返回格式: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
-                # 实盘策略仅应使用已收盘K线，避免未收盘数据抖动导致误触发信号。
-                if len(item) > 8 and str(item[8]) != "1":
-                    continue
-
-                candle = Candle(
-                    timestamp=int(item[0]),
-                    open=float(item[1]),
-                    high=float(item[2]),
-                    low=float(item[3]),
-                    close=float(item[4]),
-                    volume=float(item[5]),
-                    volume_ccy=float(item[6]) if len(item) > 6 else 0,
-                )
-                candles.append(candle)
-
-            # OKX返回的是倒序（最新在前），转为正序
-            candles.reverse()
-            return candles
+            return _parse_okx_candle_result(result, "获取K线失败")
 
         except Exception as e:
             print(f"获取K线异常: {e}")
@@ -283,20 +343,42 @@ class DataFetcher:
         Returns:
             Candle列表
         """
-        all_candles = []
-        after = None
+        if timeframe not in TIMEFRAME_TO_MS:
+            print(f"不支持的时间周期: {timeframe}，支持: {list(TIMEFRAME_TO_MS.keys())}")
+            return []
 
-        if end_time:
-            after = int(end_time.timestamp() * 1000)
+        all_candles = []
+        seen_timestamps = set()
+        after = int(end_time.timestamp() * 1000) if end_time else None
+        start_ts = int(start_time.timestamp() * 1000) if start_time else None
+        history_api = getattr(getattr(self, "market_api", None), "get_history_candlesticks", None)
 
         while len(all_candles) < max_candles:
             prev_after = after
-            batch = self.get_candles(
-                inst_id=inst_id,
-                timeframe=timeframe,
-                limit=300,
-                after=after,
-            )
+            page_limit = min(OKX_CANDLE_PAGE_LIMIT, max_candles - len(all_candles))
+            if page_limit <= 0:
+                break
+
+            if callable(history_api):
+                try:
+                    params = _build_okx_candle_params(
+                        inst_id,
+                        timeframe,
+                        page_limit,
+                        after=after,
+                    )
+                    result = history_api(**params)
+                    batch = _parse_okx_candle_result(result, "获取历史K线失败")
+                except Exception as e:
+                    print(f"获取历史K线异常: {e}")
+                    break
+            else:
+                batch = self.get_candles(
+                    inst_id=inst_id,
+                    timeframe=timeframe,
+                    limit=page_limit,
+                    after=after,
+                )
 
             if not batch:
                 break
@@ -304,28 +386,34 @@ class DataFetcher:
             # 防御性：若分页参数 after 不推进（例如接口忽略 after 或包含边界导致重复返回同一页），
             # 会造成大量重复请求直到 max_candles 才停止，触发限流并显著拖慢同步。
             # 这里检测“最老K线时间戳未向过去推进”则停止分页。
-            if prev_after is not None and batch[0].timestamp == prev_after:
+            oldest_timestamp = batch[0].timestamp
+            if prev_after is not None and oldest_timestamp >= prev_after:
                 print(f"[DataFetcher] 历史K线分页未推进（after={prev_after}），停止分页以避免重复拉取")
                 break
 
             # 检查是否已达到开始时间
-            if start_time:
-                start_ts = int(start_time.timestamp() * 1000)
+            if start_ts is not None:
                 batch = [c for c in batch if c.timestamp >= start_ts]
                 if not batch:
                     break
 
-            all_candles = batch + all_candles
-            after = batch[0].timestamp
+            fresh_batch = [c for c in batch if c.timestamp not in seen_timestamps]
+            if not fresh_batch:
+                break
+
+            for candle in fresh_batch:
+                seen_timestamps.add(candle.timestamp)
+
+            all_candles = fresh_batch + all_candles
+            after = oldest_timestamp - 1
 
             # 避免请求过于频繁
             time.sleep(0.1)
 
-            # 如果返回数量少于请求数量，说明已经没有更多数据
-            if len(batch) < 300:
+            if start_ts is not None and oldest_timestamp <= start_ts:
                 break
 
-        return all_candles[:max_candles]
+        return all_candles[-max_candles:]
 
     def get_instruments(self, inst_type: InstType = InstType.SPOT) -> List[Dict[str, Any]]:
         """
@@ -359,6 +447,193 @@ class DataFetcher:
         except Exception as e:
             print(f"获取产品列表异常: {e}")
             return []
+
+    def get_recent_trades(self, inst_id: str, limit: int = 50) -> List[MarketTrade]:
+        """
+        获取公共逐笔成交
+
+        Args:
+            inst_id: 交易对，如 BTC-USDT / BTC-USDT-SWAP
+            limit: 返回数量，最大 100
+
+        Returns:
+            MarketTrade 列表，按时间倒序（最新在前）
+        """
+        try:
+            result = self.market_api.get_trades(
+                instId=inst_id,
+                limit=str(min(max(limit, 1), 100)),
+            )
+            if result["code"] != "0":
+                print(f"[DataFetcher] 获取 {inst_id} 最新成交失败: {result.get('msg', '未知错误')}")
+                return []
+
+            trades = []
+            for item in result.get("data", []):
+                try:
+                    trades.append(MarketTrade(
+                        inst_id=item.get("instId", inst_id),
+                        trade_id=item.get("tradeId", ""),
+                        price=float(item.get("px", 0)),
+                        size=float(item.get("sz", 0)),
+                        side=item.get("side", ""),
+                        timestamp=int(item.get("ts", 0)),
+                    ))
+                except (TypeError, ValueError):
+                    continue
+
+            return trades
+        except Exception as e:
+            print(f"[DataFetcher] 获取 {inst_id} 最新成交异常: {e}")
+            return []
+
+    def get_orderbook(self, inst_id: str, size: int = 20) -> Optional[Dict[str, Any]]:
+        """
+        获取订单簿深度。
+
+        Args:
+            inst_id: 交易对，如 BTC-USDT / BTC-USDT-SWAP
+            size: 返回档位数量
+
+        Returns:
+            规范化后的盘口深度字典，失败返回 None
+        """
+        normalized_size = min(max(int(size or 20), 1), OKX_ORDERBOOK_FULL_MAX)
+
+        try:
+            source = "books"
+            payload: Optional[Dict[str, Any]] = None
+
+            if normalized_size > OKX_ORDERBOOK_STANDARD_MAX:
+                payload = self._get_full_orderbook_payload(inst_id, normalized_size)
+                source = "books-full"
+                if not payload:
+                    print(
+                        f"[DataFetcher] 获取 {inst_id} {normalized_size} 档全量盘口失败，"
+                        f"回退到 {OKX_ORDERBOOK_STANDARD_MAX} 档标准盘口"
+                    )
+
+            if not payload:
+                standard_size = min(normalized_size, OKX_ORDERBOOK_STANDARD_MAX)
+                payload = self._get_standard_orderbook_payload(inst_id, standard_size)
+                if not payload:
+                    return None
+                if normalized_size > OKX_ORDERBOOK_STANDARD_MAX:
+                    source = "books-fallback"
+
+            def normalize_levels(raw_levels: Any) -> List[Dict[str, Any]]:
+                levels: List[Dict[str, Any]] = []
+                cumulative_size = 0.0
+
+                for item in raw_levels or []:
+                    if not isinstance(item, (list, tuple)) or len(item) < 2:
+                        continue
+
+                    price = _safe_float(item[0])
+                    size_value = _safe_float(item[1])
+                    order_count = _safe_int(item[3]) if len(item) > 3 else 0
+
+                    if price <= 0 or size_value < 0:
+                        continue
+
+                    cumulative_size += size_value
+                    levels.append({
+                        "price": price,
+                        "size": size_value,
+                        "total": cumulative_size,
+                        "order_count": order_count,
+                    })
+
+                return levels[:normalized_size]
+
+            asks = normalize_levels(payload.get("asks"))
+            bids = normalize_levels(payload.get("bids"))
+
+            best_ask = asks[0]["price"] if asks else 0.0
+            best_bid = bids[0]["price"] if bids else 0.0
+            spread = best_ask - best_bid if best_ask > 0 and best_bid > 0 else 0.0
+            mid_price = ((best_ask + best_bid) / 2.0) if best_ask > 0 and best_bid > 0 else 0.0
+            spread_rate = (spread / mid_price) if mid_price > 0 else 0.0
+            actual_size = min(len(asks), len(bids)) if asks and bids else max(len(asks), len(bids))
+
+            return {
+                "inst_id": inst_id,
+                "asks": asks,
+                "bids": bids,
+                "best_ask": best_ask,
+                "best_bid": best_bid,
+                "mid_price": mid_price,
+                "spread": spread,
+                "spread_rate": spread_rate,
+                "ask_depth_total": asks[-1]["total"] if asks else 0.0,
+                "bid_depth_total": bids[-1]["total"] if bids else 0.0,
+                "timestamp": _safe_int(payload.get("ts")),
+                "requested_size": normalized_size,
+                "actual_size": actual_size,
+                "source": source,
+                "is_truncated": actual_size < normalized_size,
+            }
+        except Exception as e:
+            print(f"[DataFetcher] 获取 {inst_id} 盘口异常: {e}")
+            return None
+
+    def _get_standard_orderbook_payload(self, inst_id: str, size: int) -> Optional[Dict[str, Any]]:
+        """获取普通盘口，最大支持 400 档。"""
+        try:
+            result = self.market_api.get_orderbook(
+                instId=inst_id,
+                sz=str(min(max(int(size or 20), 1), OKX_ORDERBOOK_STANDARD_MAX)),
+            )
+        except Exception as exc:
+            print(f"[DataFetcher] 获取 {inst_id} 标准盘口异常: {exc}")
+            return None
+
+        if result.get("code") != "0" or not result.get("data"):
+            print(f"[DataFetcher] 获取 {inst_id} 标准盘口失败: {result.get('msg', '未知错误')}")
+            return None
+
+        payload = result["data"][0]
+        return payload if isinstance(payload, dict) else None
+
+    def _get_full_orderbook_payload(self, inst_id: str, size: int) -> Optional[Dict[str, Any]]:
+        """当请求档位超过普通 books 上限时，回退到 books-full。"""
+        normalized_size = min(max(int(size or 20), 1), OKX_ORDERBOOK_FULL_MAX)
+
+        for attempt in range(1, OKX_PUBLIC_HTTP_RETRY_COUNT + 1):
+            try:
+                response = httpx.get(
+                    f"{OKX_PUBLIC_REST_BASE_URL}/api/v5/market/books-full",
+                    params={
+                        "instId": inst_id,
+                        "sz": str(normalized_size),
+                    },
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "okxQuantitative/1.0",
+                    },
+                    timeout=OKX_PUBLIC_HTTP_TIMEOUT,
+                    follow_redirects=True,
+                )
+                response.raise_for_status()
+                result = response.json()
+            except httpx.TimeoutException as exc:
+                print(f"[DataFetcher] 获取 {inst_id} 全量盘口超时(第{attempt}次): {exc}")
+                if attempt < OKX_PUBLIC_HTTP_RETRY_COUNT:
+                    time.sleep(0.3 * attempt)
+                    continue
+                return None
+            except Exception as exc:
+                print(f"[DataFetcher] 获取 {inst_id} 全量盘口异常: {exc}")
+                return None
+
+            if result.get("code") != "0" or not result.get("data"):
+                print(f"[DataFetcher] 获取 {inst_id} 全量盘口失败: {result.get('msg', '未知错误')}")
+                return None
+
+            payload = result["data"][0]
+            return payload if isinstance(payload, dict) else None
+
+        return None
 
 
 # 便捷函数

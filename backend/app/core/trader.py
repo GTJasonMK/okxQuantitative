@@ -2,11 +2,12 @@
 # 封装 OKX Trading API 和 Account API
 # 支持同时运行模拟盘和实盘两种模式
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable, TypeVar
 from dataclasses import dataclass
 from threading import Lock
 import types
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+import time
 
 # python-okx / okx-sdk 依赖在部分环境（仅做回测/数据服务）可能未安装。
 # 这里做可选导入：保证后端可启动、单元测试可运行；真正调用交易功能时再报出明确错误。
@@ -25,6 +26,30 @@ except Exception:
     Account = types.SimpleNamespace(AccountAPI=_missing_okx_dep)
 
 from ..config import config
+
+
+_T = TypeVar("_T")
+
+# 常见瞬时网络/TLS 抖动特征。此类异常适合短暂重试，认证/参数错误则不应重试。
+_TRANSIENT_OKX_NETWORK_ERROR_MARKERS = (
+    "UNEXPECTED_EOF_WHILE_READING",
+    "EOF occurred in violation of protocol",
+    "SSLEOFError",
+    "Remote end closed connection without response",
+    "Connection reset by peer",
+    "Connection aborted",
+    "Read timed out",
+    "timed out",
+)
+
+
+def _is_transient_okx_network_error(exc: Exception) -> bool:
+    """判断是否为可通过短重试恢复的瞬时网络异常。"""
+    if isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+
+    error_text = str(exc)
+    return any(marker in error_text for marker in _TRANSIENT_OKX_NETWORK_ERROR_MARKERS)
 
 
 @dataclass
@@ -652,6 +677,44 @@ class OKXAccount:
         """获取当前模式"""
         return "simulated" if self._is_simulated else "live"
 
+    def _call_account_api_with_retry(
+        self,
+        action_name: str,
+        operation: Callable[[], _T],
+        *,
+        max_attempts: int = 3,
+        base_delay_seconds: float = 0.35,
+    ) -> _T:
+        """
+        调用 Account API，并仅对瞬时网络/TLS 异常做短重试。
+
+        说明：
+        - 仅重试连接被对端提前关闭、超时、EOF 等瞬时问题。
+        - 每次重试前重新初始化 SDK 客户端，避免复用已损坏的底层连接状态。
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return operation()
+            except Exception as e:
+                last_error = e
+                should_retry = attempt < max_attempts and _is_transient_okx_network_error(e)
+                if not should_retry:
+                    raise
+
+                print(
+                    f"[OKXAccount-{self.mode}] {action_name} 遇到瞬时网络异常，"
+                    f"准备第 {attempt + 1}/{max_attempts} 次重试: {e}"
+                )
+                self.reinit()
+                if not self.is_available:
+                    raise
+                time.sleep(base_delay_seconds * attempt)
+
+        assert last_error is not None
+        raise last_error
+
     def get_balance(self, ccy: str = "") -> Dict[str, Any]:
         """
         获取账户余额
@@ -666,7 +729,10 @@ class OKXAccount:
             return {"error": "API 未初始化"}
 
         try:
-            result = self._account_api.get_account_balance(ccy=ccy)
+            result = self._call_account_api_with_retry(
+                "get_balance",
+                lambda: self._account_api.get_account_balance(ccy=ccy),
+            )
             print(f"[OKXAccount-{self.mode}] get_account_balance 返回: code={result.get('code')}, msg={result.get('msg')}")
             if result.get("code") == "0" and result.get("data"):
                 return result["data"][0]

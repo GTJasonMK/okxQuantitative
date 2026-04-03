@@ -8,14 +8,26 @@ class MarketWebSocket {
     this.ws = null
     this.url = null  // 动态获取
     this.reconnectAttempts = 0
-    this.maxReconnectAttempts = 5
+    this.maxReconnectAttempts = Number.POSITIVE_INFINITY
     this.reconnectDelay = 3000
     this.isConnecting = false
     this.heartbeatInterval = null
+    this.watchdogInterval = null
+    this.reconnectTimer = null
+    this.manualClose = false
+    this.connectionState = false
+    this.heartbeatIntervalMs = 30000
+    this.watchdogIntervalMs = 10000
+    this.silentTimeoutMs = 45000
+    this.lastMessageAt = 0
+    this.lastPongAt = 0
+    this.lastHeartbeatAt = 0
 
     // 订阅状态
     this.subscribedInstruments = new Set()
+    this.subscribedCandles = new Set()
     this.subscribedChannels = new Set()
+    this.connectionListeners = new Set()
 
     // 交易模式：用于订阅私有通道时告诉后端应连接 simulated/live 哪套私有 WS
     this.mode = null
@@ -23,9 +35,12 @@ class MarketWebSocket {
     // 回调函数: channel -> Set<callback>
     this.listeners = {
       ticker: new Map(),   // instId -> Set<callback>
+      candle: new Map(),   // instId:timeframe -> Set<callback>
       account: new Set(),  // Set<callback>
       order: new Set(),    // Set<callback>
       fill: new Set(),     // Set<callback>
+      alert: new Set(),    // Set<callback>
+      assistantPatrol: new Set(), // Set<callback>
     }
   }
 
@@ -44,6 +59,8 @@ class MarketWebSocket {
     }
 
     this.isConnecting = true
+    this.manualClose = false
+    this._clearReconnectTimer()
 
     // 动态获取 WebSocket URL
     const baseUrl = getBaseURL()
@@ -51,42 +68,76 @@ class MarketWebSocket {
 
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.url)
+        const socket = new WebSocket(this.url)
+        this.ws = socket
 
-        this.ws.onopen = () => {
+        socket.onopen = () => {
+          if (this.ws !== socket) {
+            return
+          }
+
           console.log('[WS] 连接成功')
           this.isConnecting = false
           this.reconnectAttempts = 0
+          this._clearReconnectTimer()
+          this._markConnectionActive()
+          this._notifyConnectionState(true)
 
           // 重新订阅
           this._resubscribeAll()
 
           // 启动心跳
           this._startHeartbeat()
+          this._startWatchdog()
 
           resolve()
         }
 
-        this.ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
+          if (this.ws !== socket) {
+            return
+          }
+
+          this._markMessageActive()
           this._handleMessage(event.data)
         }
 
-        this.ws.onerror = (error) => {
+        socket.onerror = (error) => {
+          const wasConnecting = this.isConnecting && this.ws === socket
           console.error('[WS] 连接错误:', error)
+          if (this.ws !== socket) {
+            return
+          }
+
           this.isConnecting = false
-          reject(error)
+          if (wasConnecting) {
+            reject(error)
+          }
         }
 
-        this.ws.onclose = (event) => {
+        socket.onclose = (event) => {
+          const isActiveSocket = this.ws === socket
+          const wasConnecting = this.isConnecting && isActiveSocket
+          const wasManualClose = this.manualClose
           console.log('[WS] 连接关闭:', event.code, event.reason)
+          if (!isActiveSocket) {
+            return
+          }
+
           this.isConnecting = false
+          this.ws = null
           this._stopHeartbeat()
+          this._stopWatchdog()
+          this._resetLiveness()
+          this._notifyConnectionState(false, { reason: event.reason || `close:${event.code}` })
+
+          if (wasConnecting) {
+            reject(new Error(`WebSocket 连接在握手阶段关闭: ${event.reason || event.code}`))
+          }
 
           // 自动重连
-          if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++
-            console.log(`[WS] ${this.reconnectDelay / 1000}秒后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
-            setTimeout(() => this.connect(), this.reconnectDelay)
+          if (!wasManualClose) {
+            this._scheduleReconnect(event.reason || `close:${event.code}`)
           }
         }
       } catch (error) {
@@ -101,16 +152,25 @@ class MarketWebSocket {
    */
   disconnect() {
     this._stopHeartbeat()
+    this._stopWatchdog()
+    this._clearReconnectTimer()
+    this._resetLiveness()
+    this.manualClose = true
     if (this.ws) {
       this.ws.close()
       this.ws = null
     }
+    this._notifyConnectionState(false, { reason: 'manual disconnect' })
     this.subscribedInstruments.clear()
+    this.subscribedCandles.clear()
     this.subscribedChannels.clear()
     this.listeners.ticker.clear()
+    this.listeners.candle.clear()
     this.listeners.account.clear()
     this.listeners.order.clear()
     this.listeners.fill.clear()
+    this.listeners.alert.clear()
+    this.listeners.assistantPatrol.clear()
   }
 
   /**
@@ -118,6 +178,51 @@ class MarketWebSocket {
    */
   get isConnected() {
     return this.ws?.readyState === WebSocket.OPEN
+  }
+
+  addConnectionListener(callback) {
+    this.connectionListeners.add(callback)
+  }
+
+  removeConnectionListener(callback) {
+    this.connectionListeners.delete(callback)
+  }
+
+  _normalizeCandleTimeframe(timeframe) {
+    if (typeof timeframe !== 'string') {
+      return ''
+    }
+
+    const normalized = timeframe.trim()
+    if (!normalized) {
+      return ''
+    }
+
+    let nextTimeframe = normalized
+    if (normalized.startsWith('candle')) {
+      nextTimeframe = normalized.slice(6)
+    }
+
+    return nextTimeframe
+  }
+
+  _buildCandleKey(instId, timeframe) {
+    return `${instId}:${this._normalizeCandleTimeframe(timeframe)}`
+  }
+
+  _parseCandleKey(key) {
+    const separatorIndex = key.lastIndexOf(':')
+    if (separatorIndex <= 0) {
+      return null
+    }
+
+    const instId = key.slice(0, separatorIndex)
+    const timeframe = this._normalizeCandleTimeframe(key.slice(separatorIndex + 1))
+    if (!instId || !timeframe) {
+      return null
+    }
+
+    return { instId, timeframe }
   }
 
   /**
@@ -195,6 +300,87 @@ class MarketWebSocket {
 
     if (newInstruments.length > 0 && this.isConnected) {
       this._sendSubscribe(['ticker'], newInstruments)
+    }
+  }
+
+  subscribeCandle(instId, timeframe, callback) {
+    const normalizedTimeframe = this._normalizeCandleTimeframe(timeframe)
+    if (!instId || !normalizedTimeframe) {
+      return
+    }
+
+    const candleKey = this._buildCandleKey(instId, normalizedTimeframe)
+    if (!this.listeners.candle.has(candleKey)) {
+      this.listeners.candle.set(candleKey, new Set())
+    }
+    this.listeners.candle.get(candleKey).add(callback)
+
+    if (!this.subscribedCandles.has(candleKey)) {
+      this.subscribedCandles.add(candleKey)
+      if (this.isConnected) {
+        this._sendSubscribe(['candle'], [instId], { timeframe: normalizedTimeframe })
+      }
+    }
+  }
+
+  unsubscribeCandle(instId, timeframe, callback) {
+    const normalizedTimeframe = this._normalizeCandleTimeframe(timeframe)
+    if (!instId || !normalizedTimeframe) {
+      return
+    }
+
+    const candleKey = this._buildCandleKey(instId, normalizedTimeframe)
+    if (!this.listeners.candle.has(candleKey)) {
+      return
+    }
+
+    this.listeners.candle.get(candleKey).delete(callback)
+    if (this.listeners.candle.get(candleKey).size > 0) {
+      return
+    }
+
+    this.listeners.candle.delete(candleKey)
+    this.subscribedCandles.delete(candleKey)
+    if (this.isConnected) {
+      this._sendUnsubscribe(['candle'], [instId], { timeframe: normalizedTimeframe })
+    }
+  }
+
+  subscribeManyCandles(subscriptions, callback) {
+    const groupedSubscriptions = new Map()
+
+    for (const subscription of subscriptions || []) {
+      const instId = subscription?.instId
+      const timeframe = this._normalizeCandleTimeframe(subscription?.timeframe)
+      if (!instId || !timeframe) {
+        continue
+      }
+
+      const candleKey = this._buildCandleKey(instId, timeframe)
+      if (!this.listeners.candle.has(candleKey)) {
+        this.listeners.candle.set(candleKey, new Set())
+      }
+      this.listeners.candle.get(candleKey).add(callback)
+
+      if (this.subscribedCandles.has(candleKey)) {
+        continue
+      }
+
+      this.subscribedCandles.add(candleKey)
+      if (!groupedSubscriptions.has(timeframe)) {
+        groupedSubscriptions.set(timeframe, [])
+      }
+      groupedSubscriptions.get(timeframe).push(instId)
+    }
+
+    if (!this.isConnected) {
+      return
+    }
+
+    for (const [timeframe, instIds] of groupedSubscriptions.entries()) {
+      if (instIds.length > 0) {
+        this._sendSubscribe(['candle'], instIds, { timeframe })
+      }
     }
   }
 
@@ -291,6 +477,52 @@ class MarketWebSocket {
     }
   }
 
+  // ==================== 提醒订阅 ====================
+
+  subscribeAlerts(callback) {
+    this.listeners.alert.add(callback)
+
+    if (!this.subscribedChannels.has('alerts')) {
+      this.subscribedChannels.add('alerts')
+      if (this.isConnected) {
+        this._sendSubscribe(['alerts'])
+      }
+    }
+  }
+
+  unsubscribeAlerts(callback) {
+    this.listeners.alert.delete(callback)
+
+    if (this.listeners.alert.size === 0) {
+      this.subscribedChannels.delete('alerts')
+      if (this.isConnected) {
+        this._sendUnsubscribe(['alerts'])
+      }
+    }
+  }
+
+  subscribeAssistantPatrol(callback) {
+    this.listeners.assistantPatrol.add(callback)
+
+    if (!this.subscribedChannels.has('assistant_patrol')) {
+      this.subscribedChannels.add('assistant_patrol')
+      if (this.isConnected) {
+        this._sendSubscribe(['assistant_patrol'])
+      }
+    }
+  }
+
+  unsubscribeAssistantPatrol(callback) {
+    this.listeners.assistantPatrol.delete(callback)
+
+    if (this.listeners.assistantPatrol.size === 0) {
+      this.subscribedChannels.delete('assistant_patrol')
+      if (this.isConnected) {
+        this._sendUnsubscribe(['assistant_patrol'])
+      }
+    }
+  }
+
   // ==================== 便捷方法 ====================
 
   /**
@@ -313,20 +545,22 @@ class MarketWebSocket {
 
   // ==================== 内部方法 ====================
 
-  _sendSubscribe(channels, instruments = []) {
+  _sendSubscribe(channels, instruments = [], extra = {}) {
     this._send({
       action: 'subscribe',
       channels: channels,
       instruments: instruments,
+      ...extra,
       ...(this.mode ? { mode: this.mode } : {}),
     })
   }
 
-  _sendUnsubscribe(channels, instruments = []) {
+  _sendUnsubscribe(channels, instruments = [], extra = {}) {
     this._send({
       action: 'unsubscribe',
       channels: channels,
       instruments: instruments,
+      ...extra,
       ...(this.mode ? { mode: this.mode } : {}),
     })
   }
@@ -337,15 +571,110 @@ class MarketWebSocket {
     }
   }
 
+  _markConnectionActive() {
+    const now = Date.now()
+    this.lastMessageAt = now
+    this.lastPongAt = now
+    this.lastHeartbeatAt = 0
+  }
+
+  _markMessageActive() {
+    this.lastMessageAt = Date.now()
+  }
+
+  _markPongActive() {
+    const now = Date.now()
+    this.lastMessageAt = now
+    this.lastPongAt = now
+  }
+
+  _resetLiveness() {
+    this.lastMessageAt = 0
+    this.lastPongAt = 0
+    this.lastHeartbeatAt = 0
+  }
+
+  _clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+  }
+
+  _scheduleReconnect(reason = '') {
+    if (this.reconnectTimer || this.manualClose) {
+      return
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.warn('[WS] 已达到最大重连次数，停止自动重连')
+      return
+    }
+
+    this.reconnectAttempts++
+    const detail = reason ? `，原因: ${reason}` : ''
+    console.log(`[WS] ${this.reconnectDelay / 1000}秒后尝试重连 (${this.reconnectAttempts})${detail}`)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.connect().catch((error) => {
+        console.warn('[WS] 自动重连失败:', error)
+      })
+    }, this.reconnectDelay)
+  }
+
+  _forceReconnect(reason = 'silent timeout') {
+    if (!this.ws || this.manualClose) {
+      return
+    }
+
+    console.warn(`[WS] 检测到连接静默，准备强制重连: ${reason}`)
+    this._notifyConnectionState(false, { reason })
+
+    const socket = this.ws
+    this.ws = null
+    this._stopHeartbeat()
+    this._stopWatchdog()
+    this._resetLiveness()
+
+    try {
+      socket.close(4000, reason)
+      this._scheduleReconnect(reason)
+    } catch (error) {
+      console.warn('[WS] 强制关闭连接失败，改为直接重连:', error)
+      this._scheduleReconnect(reason)
+    }
+  }
+
   _resubscribeAll() {
     // 重新订阅行情
     if (this.subscribedInstruments.size > 0) {
       this._sendSubscribe(['ticker'], [...this.subscribedInstruments])
     }
 
+    if (this.subscribedCandles.size > 0) {
+      const groupedCandles = new Map()
+      for (const candleKey of this.subscribedCandles) {
+        const parsed = this._parseCandleKey(candleKey)
+        if (!parsed) {
+          continue
+        }
+
+        if (!groupedCandles.has(parsed.timeframe)) {
+          groupedCandles.set(parsed.timeframe, [])
+        }
+        groupedCandles.get(parsed.timeframe).push(parsed.instId)
+      }
+
+      for (const [timeframe, instIds] of groupedCandles.entries()) {
+        if (instIds.length > 0) {
+          this._sendSubscribe(['candle'], instIds, { timeframe })
+        }
+      }
+    }
+
     // 重新订阅私有通道
     const privateChannels = [...this.subscribedChannels].filter(
-      ch => ['account', 'orders', 'fills'].includes(ch)
+      ch => ['account', 'orders', 'fills', 'alerts', 'assistant_patrol'].includes(ch)
     )
     if (privateChannels.length > 0) {
       this._sendSubscribe(privateChannels)
@@ -360,6 +689,9 @@ class MarketWebSocket {
         case 'ticker':
           this._handleTicker(message.data)
           break
+        case 'candle':
+          this._handleCandle(message.data)
+          break
         case 'account':
           // 传递 mode，让回调可以判断是否处理
           this._handleAccount(message.data, message.mode)
@@ -370,6 +702,12 @@ class MarketWebSocket {
         case 'fill':
           this._handleFill(message.data, message.mode)
           break
+        case 'alert':
+          this._handleAlert(message.data)
+          break
+        case 'assistant_patrol':
+          this._handleAssistantPatrol(message.data)
+          break
         case 'subscribed':
           console.log('[WS] 订阅成功:', message.channels, message.instruments)
           break
@@ -377,6 +715,7 @@ class MarketWebSocket {
           console.log('[WS] 取消订阅成功:', message.channels, message.instruments)
           break
         case 'pong':
+          this._markPongActive()
           break
         case 'error':
           console.error('[WS] 错误:', message.message)
@@ -395,6 +734,7 @@ class MarketWebSocket {
       const data = {
         instId: ticker.instId,
         last: parseFloat(ticker.last),
+        lastSz: parseFloat(ticker.lastSz || 0),
         askPx: parseFloat(ticker.askPx),
         bidPx: parseFloat(ticker.bidPx),
         open24h: parseFloat(ticker.open24h),
@@ -445,17 +785,114 @@ class MarketWebSocket {
     }
   }
 
+  _handleCandle(candle) {
+    const instId = candle.instId
+    const timeframe = this._normalizeCandleTimeframe(candle.timeframe)
+    const candleKey = this._buildCandleKey(instId, timeframe)
+    const callbacks = this.listeners.candle.get(candleKey)
+
+    if (!callbacks) {
+      return
+    }
+
+    const data = {
+      instId,
+      timeframe,
+      timestamp: parseInt(candle.ts),
+      open: parseFloat(candle.open),
+      high: parseFloat(candle.high),
+      low: parseFloat(candle.low),
+      close: parseFloat(candle.close),
+      volume: parseFloat(candle.vol || 0),
+      volumeCcy: parseFloat(candle.volCcy || 0),
+      volumeQuote: parseFloat(candle.volCcyQuote || 0),
+      confirm: parseInt(candle.confirm || 0),
+    }
+
+    for (const callback of callbacks) {
+      try {
+        callback(data)
+      } catch (error) {
+        console.error('[WS] K线回调执行错误:', error)
+      }
+    }
+  }
+
+  _handleAlert(alertData) {
+    for (const callback of this.listeners.alert) {
+      try {
+        callback(alertData)
+      } catch (error) {
+        console.error('[WS] 提醒回调执行错误:', error)
+      }
+    }
+  }
+
+  _handleAssistantPatrol(payload) {
+    for (const callback of this.listeners.assistantPatrol) {
+      try {
+        callback(payload)
+      } catch (error) {
+        console.error('[WS] 主动巡检回调执行错误:', error)
+      }
+    }
+  }
+
   _startHeartbeat() {
     this._stopHeartbeat()
     this.heartbeatInterval = setInterval(() => {
+      this.lastHeartbeatAt = Date.now()
       this._send({ action: 'ping' })
-    }, 30000)
+    }, this.heartbeatIntervalMs)
   }
 
   _stopHeartbeat() {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval)
       this.heartbeatInterval = null
+    }
+  }
+
+  _startWatchdog() {
+    this._stopWatchdog()
+    this.watchdogInterval = setInterval(() => {
+      if (!this.isConnected || !this.ws) {
+        return
+      }
+
+      const now = Date.now()
+      const lastAliveAt = Math.max(this.lastMessageAt, this.lastPongAt, 0)
+      if (lastAliveAt <= 0) {
+        return
+      }
+
+      if (now - lastAliveAt <= this.silentTimeoutMs) {
+        return
+      }
+
+      this._forceReconnect(`silent timeout ${Math.round((now - lastAliveAt) / 1000)}s`)
+    }, this.watchdogIntervalMs)
+  }
+
+  _stopWatchdog() {
+    if (this.watchdogInterval) {
+      clearInterval(this.watchdogInterval)
+      this.watchdogInterval = null
+    }
+  }
+
+  _notifyConnectionState(connected, meta = {}) {
+    if (this.connectionState === connected) {
+      return
+    }
+
+    this.connectionState = connected
+    for (const callback of this.connectionListeners) {
+      try {
+        callback({ connected, ...meta })
+      } catch (error) {
+        console.error('[WS] 连接状态回调执行错误:', error)
+      }
     }
   }
 }

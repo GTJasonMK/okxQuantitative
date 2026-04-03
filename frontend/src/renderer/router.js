@@ -10,35 +10,84 @@ const routes = [
     meta: { title: '行情' },
   },
   {
+    path: '/watchlist',
+    redirect: to => ({
+      path: '/data',
+      query: {
+        ...to.query,
+        tab: 'watchlist',
+      },
+    }),
+  },
+  {
+    path: '/inventory',
+    redirect: to => ({
+      path: '/data',
+      query: {
+        ...to.query,
+        tab: 'inventory',
+      },
+    }),
+  },
+  {
+    path: '/data',
+    name: 'DataCenter',
+    component: () => import('./views/DataCenterView.vue'),
+    meta: { title: '数据中心' },
+  },
+  {
     path: '/trading/simulated',
-    name: 'TradingSimulated',
-    component: () => import('./views/TradingView.vue'),
-    props: { mode: 'simulated' },
-    meta: { title: '模拟盘交易' },
+    redirect: to => ({
+      path: '/trading',
+      query: {
+        ...to.query,
+        tab: 'simulated',
+      },
+    }),
   },
   {
     path: '/trading/live',
-    name: 'TradingLive',
-    component: () => import('./views/TradingView.vue'),
-    props: { mode: 'live' },
-    meta: { title: '实盘交易' },
+    redirect: to => ({
+      path: '/trading',
+      query: {
+        ...to.query,
+        tab: 'live',
+      },
+    }),
   },
   {
-    // 保留旧路由，重定向到模拟盘
     path: '/trading',
-    redirect: '/trading/simulated',
+    name: 'TradingCenter',
+    component: () => import('./views/TradingCenterView.vue'),
+    meta: { title: '交易中心' },
   },
   {
     path: '/backtest',
-    name: 'Backtest',
-    component: () => import('./views/BacktestView.vue'),
-    meta: { title: '回测' },
+    redirect: to => ({
+      path: '/strategy',
+      query: {
+        ...to.query,
+        tab: 'backtest',
+      },
+    }),
+  },
+  {
+    path: '/analytics',
+    name: 'Analytics',
+    component: () => import('./views/AnalyticsView.vue'),
+    meta: { title: '分析中心' },
+  },
+  {
+    path: '/journal',
+    name: 'Journal',
+    component: () => import('./views/JournalView.vue'),
+    meta: { title: '交易日志' },
   },
   {
     path: '/strategy',
-    name: 'Strategy',
-    component: () => import('./views/StrategyView.vue'),
-    meta: { title: '策略' },
+    name: 'StrategyCenter',
+    component: () => import('./views/StrategyCenterView.vue'),
+    meta: { title: '策略中心' },
   },
   {
     path: '/settings',

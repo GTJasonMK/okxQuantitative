@@ -2,6 +2,7 @@
 
 # Web框架
 fastapi>=0.104.0
+annotated-doc>=0.0.4
 uvicorn[standard]>=0.24.0
 
 # OKX SDK

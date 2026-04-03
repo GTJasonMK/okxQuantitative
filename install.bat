@@ -82,6 +82,15 @@ if %errorlevel% neq 0 (
     goto :error
 )
 
+echo [CHECK] Verifying backend runtime dependencies...
+uv run python -c "import fastapi, uvicorn, annotated_doc" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Backend runtime dependency verification failed
+    echo [TIP] FastAPI requires annotated-doc in the current dependency set
+    echo [TIP] Retry: cd backend ^&^& uv sync
+    goto :error
+)
+
 echo [OK] Backend dependencies installed
 echo.
 

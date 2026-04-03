@@ -79,7 +79,6 @@ desktop.ini
 *.bak
 
 #个人
-AGENTS.md
 CLAUDE.md
 /docs
 .claude

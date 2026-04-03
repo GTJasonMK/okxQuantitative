@@ -119,6 +119,8 @@ class BacktestResult:
                     "value": round(t.value, 2),
                     "commission": round(t.commission, 4),
                     "pnl": round(t.pnl, 2),
+                    "reason": t.reason,
+                    "metadata": t.metadata or {},
                 }
                 for t in self.trades
             ],
@@ -320,6 +322,7 @@ class BacktestEngine:
             price=price,
             quantity=quantity,
             commission=commission,
+            reason=signal.reason,
             metadata=signal.metadata or {},
         )
         self.trades.append(trade)
@@ -367,6 +370,7 @@ class BacktestEngine:
             quantity=quantity,
             commission=commission,
             pnl=pnl,
+            reason=signal.reason,
             metadata=signal.metadata or {},
         )
         self.trades.append(trade)

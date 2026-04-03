@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import math
+
 from typing import Optional
 
 
@@ -27,6 +29,23 @@ TIMEFRAME_TO_MS: dict[str, int] = {
     "1D": 24 * 60 * 60 * 1000,
     "1W": 7 * 24 * 60 * 60 * 1000,
     "1M": 30 * 24 * 60 * 60 * 1000,
+}
+
+# 时间周期中文标签（单一来源，消除 config.py 中的重复定义）
+TIMEFRAME_LABELS: dict[str, str] = {
+    "1m": "1分钟",
+    "3m": "3分钟",
+    "5m": "5分钟",
+    "15m": "15分钟",
+    "30m": "30分钟",
+    "1H": "1小时",
+    "2H": "2小时",
+    "4H": "4小时",
+    "6H": "6小时",
+    "12H": "12小时",
+    "1D": "1天",
+    "1W": "1周",
+    "1M": "1月",
 }
 
 DEFAULT_TIMEFRAME = "1H"
@@ -80,6 +99,19 @@ def calculate_candle_count(*, timeframe: str, days: int, min_candles: int = 100)
     d = max(int(days), 1)
     per_day = candles_per_day(timeframe)
     return max(int(d * per_day), int(min_candles))
+
+
+def estimate_days_for_candle_count(
+    *,
+    timeframe: str,
+    count: int,
+    minimum_days: int = 1,
+) -> int:
+    """根据目标 K 线数量估算需要覆盖多少天。"""
+    c = max(int(count), 1)
+    ms = timeframe_to_ms(timeframe)
+    estimated = math.ceil((c * ms) / _DAY_MS)
+    return max(estimated, int(minimum_days))
 
 
 def periods_per_year(timeframe: str, *, default: float = 365) -> float:

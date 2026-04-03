@@ -31,6 +31,22 @@ where node >nul 2>&1 || (echo [ERROR] Node.js not found && pause && exit /b 1)
 echo [1/2] Syncing backend...
 cd /d "%BACKEND_DIR%"
 uv sync >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Backend dependency sync failed
+    echo         Run install.bat or execute "cd backend && uv sync" manually
+    pause
+    exit /b 1
+)
+
+echo      Verifying backend runtime...
+uv run python -c "import fastapi, uvicorn, annotated_doc" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Backend runtime dependencies are incomplete
+    echo         FastAPI currently requires annotated-doc, but it is missing from the venv
+    echo         Fix: cd backend ^&^& uv sync
+    pause
+    exit /b 1
+)
 
 :: Check frontend
 echo [2/2] Checking frontend...

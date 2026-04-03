@@ -10,6 +10,7 @@ from enum import Enum
 from threading import Lock
 
 from ..strategies.base import BaseStrategy, Signal, SignalType, StrategyConfig, Trade, OrderSide
+from ..core.risk_control import evaluate_order_risk
 from ..core.data_fetcher import Candle
 
 
@@ -60,6 +61,14 @@ class CandleManagerPort(Protocol):
         *,
         inst_type: str = "SPOT",
     ) -> List[Candle]: ...
+
+
+class PriceFetcherPort(Protocol):
+    """价格获取接口（用于风控与估值）。"""
+
+    def get_ticker_cached(self, inst_id: str): ...
+
+    def get_tickers_cached(self, inst_type: str = "SPOT") -> Dict[str, Any]: ...
 
 
 class LiveOrderStoragePort(Protocol):
@@ -190,6 +199,7 @@ class LiveTradingEngine:
         self._trader: Optional[TraderPort] = None
         self._account: Optional[AccountPort] = None
         self._candle_manager: Optional[CandleManagerPort] = None
+        self._price_fetcher: Optional[PriceFetcherPort] = None
         self._storage: Optional[LiveOrderStoragePort] = None
         self._strategy: Optional[BaseStrategy] = None
 
@@ -253,6 +263,7 @@ class LiveTradingEngine:
         account: AccountPort,
         candle_manager: CandleManagerPort,
         storage: LiveOrderStoragePort,
+        price_fetcher: Optional[PriceFetcherPort] = None,
     ):
         """
         配置引擎
@@ -275,6 +286,7 @@ class LiveTradingEngine:
         self._trader = trader
         self._account = account
         self._candle_manager = candle_manager
+        self._price_fetcher = price_fetcher
         self._storage = storage
 
         # 更新状态
@@ -306,6 +318,7 @@ class LiveTradingEngine:
         account: AccountPort,
         candle_manager: CandleManagerPort,
         storage: LiveOrderStoragePort,
+        price_fetcher: Optional[PriceFetcherPort] = None,
     ):
         """
         原子化的“配置并启动”
@@ -325,6 +338,7 @@ class LiveTradingEngine:
                 trader=trader,
                 account=account,
                 candle_manager=candle_manager,
+                price_fetcher=price_fetcher,
                 storage=storage,
             )
             await self._start_unlocked()
@@ -889,6 +903,29 @@ class LiveTradingEngine:
         # 下单（使用 asyncio.to_thread 避免阻塞事件循环）
         side = "buy" if signal.type == SignalType.BUY else "sell"
         client_order_id = self._build_client_order_id(signal)
+        risk_result = await self._evaluate_order_risk(signal=signal, side=side, size=size)
+        if not risk_result.get("allowed", True):
+            message = f"风控拒绝下单: {risk_result.get('message', '未知原因')}"
+            self._state.error_message = message
+            await self._add_order_record(
+                OrderRecord(
+                    timestamp=datetime.now(),
+                    signal_type=signal.type.value,
+                    order_id="",
+                    client_order_id=client_order_id,
+                    inst_id=self._state.symbol,
+                    side=side,
+                    size=size,
+                    price=str(signal.price),
+                    success=False,
+                    error_message=message,
+                )
+            )
+            self._state.total_orders += 1
+            self._state.failed_orders += 1
+            print(f"[LiveEngine] {message}")
+            return
+
         result = await asyncio.to_thread(
             self._trader.place_order,
             inst_id=self._state.symbol,
@@ -1005,6 +1042,29 @@ class LiveTradingEngine:
         else:
             self._state.failed_orders += 1
             print(f"[LiveEngine] 订单失败: {result.error_message}")
+
+    async def _evaluate_order_risk(self, *, signal: Signal, side: str, size: str) -> Dict[str, Any]:
+        """在下单前执行统一风控检查。"""
+        try:
+            order_size = float(size)
+        except (TypeError, ValueError):
+            return {"allowed": False, "message": "下单数量无效"}
+
+        try:
+            return await asyncio.to_thread(
+                evaluate_order_risk,
+                account=self._account,
+                fetcher=self._price_fetcher,
+                inst_id=self._state.symbol,
+                inst_type=self._state.inst_type,
+                side=side,
+                size=order_size,
+                price=float(signal.price) if signal.price is not None else None,
+                stop_loss_ratio=float(getattr(self._strategy.config, "stop_loss", 0) or 0),
+            )
+        except Exception as e:
+            print(f"[LiveEngine] 风控评估失败: {e}")
+            return {"allowed": False, "message": f"风控评估失败: {e}"}
 
     async def _sync_position(self, signal: Signal, size: str, fill_price: Optional[float] = None):
         """
@@ -1157,6 +1217,7 @@ class LiveTradingEngine:
         """获取状态字典（用于 API 返回）"""
         return {
             "status": self._state.status.value,
+            "mode": getattr(self._trader, "mode", ""),
             "strategy_id": self._state.strategy_id,
             "strategy_name": self._state.strategy_name,
             "symbol": self._state.symbol,

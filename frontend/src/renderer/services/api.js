@@ -2,6 +2,26 @@
 // 封装与后端的所有HTTP请求
 
 import axios from 'axios';
+import { createLatestOnly } from '../utils/async';
+
+const inflightGetRequests = new Map();
+
+const buildRequestKey = (config = {}) => {
+  const method = String(config.method || 'get').toUpperCase();
+  const baseURL = config.baseURL || '';
+  const url = config.url || '';
+  const params = config.params || {};
+  const payload = config.data || null;
+  return JSON.stringify({ method, baseURL, url, params, payload });
+};
+
+const shouldDedupeRequest = (config = {}) => {
+  if (config.dedupe === false) {
+    return false;
+  }
+  const method = String(config.method || 'get').toLowerCase();
+  return method === 'get';
+};
 
 // 默认后端地址
 const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8000';
@@ -53,6 +73,42 @@ instance.interceptors.request.use(
   }
 );
 
+const request = async (config) => {
+  if (!shouldDedupeRequest(config)) {
+    return instance.request(config);
+  }
+
+  const requestKey = buildRequestKey(config);
+  const existingRequest = inflightGetRequests.get(requestKey);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const nextRequest = instance.request(config)
+    .finally(() => {
+      if (inflightGetRequests.get(requestKey) === nextRequest) {
+        inflightGetRequests.delete(requestKey);
+      }
+    });
+
+  inflightGetRequests.set(requestKey, nextRequest);
+  return nextRequest;
+};
+
+/**
+ * 支持 AbortSignal 的请求方法。
+ * 用于和 createLatestOnly 配合，在参数切换时自动取消旧请求。
+ * @param {object} config axios 请求配置
+ * @param {AbortSignal} [signal] 可选的 AbortSignal
+ * @returns {Promise}
+ */
+const requestWithSignal = async (config, signal) => {
+  const mergedConfig = signal
+    ? { ...config, signal }
+    : config;
+  return request(mergedConfig);
+};
+
 // 响应拦截器
 instance.interceptors.response.use(
   (response) => {
@@ -68,7 +124,7 @@ instance.interceptors.response.use(
 export const waitForBackend = async (maxRetries = 10, intervalMs = 1000) => {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      await instance.get('/health');
+      await request({ method: 'get', url: '/health' });
       console.log(`[API] 后端连接成功`);
       return true;
     } catch (error) {
@@ -88,7 +144,7 @@ export const api = {
 
   // 健康检查
   async healthCheck() {
-    return instance.get('/health');
+    return request({ method: 'get', url: '/health' });
   },
 
   // 获取系统状态
@@ -96,11 +152,119 @@ export const api = {
     return instance.get('/status');
   },
 
+  async getAssistantStatus() {
+    return instance.get('/api/assistant/status');
+  },
+
+  async getAssistantAgentTools() {
+    return instance.get('/api/assistant/agent/tools');
+  },
+
+  async getAssistantAgentSessions(limit = 30) {
+    return instance.get('/api/assistant/agent/sessions', {
+      params: { limit },
+    });
+  },
+
+  async createAssistantAgentSession(payload = {}) {
+    return instance.post('/api/assistant/agent/sessions', payload);
+  },
+
+  async getAssistantAgentSessionDetail(sessionId) {
+    return instance.get(`/api/assistant/agent/sessions/${sessionId}`);
+  },
+
+  async getAssistantOrderDrafts(params = {}) {
+    return instance.get('/api/assistant/agent/order-drafts', {
+      params,
+    });
+  },
+
+  async getAssistantOrderDraft(draftId) {
+    return instance.get(`/api/assistant/agent/order-drafts/${draftId}`);
+  },
+
+  async getAssistantLevelSnapshots(params = {}) {
+    return instance.get('/api/assistant/agent/level-snapshots', {
+      params,
+    });
+  },
+
+  async createAssistantLevelSnapshot(payload = {}) {
+    return instance.post('/api/assistant/agent/level-snapshots', payload);
+  },
+
+  async getAssistantLevelSnapshot(snapshotId) {
+    return instance.get(`/api/assistant/agent/level-snapshots/${snapshotId}`);
+  },
+
+  async getAssistantPatrolStatus() {
+    return instance.get('/api/assistant/agent/patrol/status');
+  },
+
+  async getAssistantPatrolConfig() {
+    return instance.get('/api/assistant/agent/patrol/config');
+  },
+
+  async updateAssistantPatrolConfig(payload) {
+    return instance.put('/api/assistant/agent/patrol/config', payload);
+  },
+
+  async runAssistantPatrolNow() {
+    return instance.post('/api/assistant/agent/patrol/run-now');
+  },
+
+  async getAssistantPatrolRuns(params = {}) {
+    return instance.get('/api/assistant/agent/patrol/runs', {
+      params,
+    });
+  },
+
+  async getAssistantPatrolRun(runId) {
+    return instance.get(`/api/assistant/agent/patrol/runs/${runId}`);
+  },
+
+  async streamAssistantChat(payload, options = {}) {
+    return fetch(`${getBaseURL()}/api/assistant/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: options.signal,
+    });
+  },
+
+  async runAssistantAgentChat(payload, options = {}) {
+    return fetch(`${getBaseURL()}/api/assistant/agent/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: options.signal,
+    });
+  },
+
+  async streamAssistantAgentChat(payload, options = {}) {
+    return fetch(`${getBaseURL()}/api/assistant/agent/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: options.signal,
+    });
+  },
+
   // ==================== 行情数据 ====================
 
-  // 获取单个交易对行情
-  async getTicker(instId) {
-    return instance.get(`/api/market/ticker/${instId}`);
+  // 获取单个交易对行情（支持 signal 取消）
+  async getTicker(instId, options = {}) {
+    const params = {};
+    if (options.instType) params.inst_type = options.instType;
+    if (options.fresh === true) params.fresh = true;
+    return requestWithSignal({ method: 'get', url: `/api/market/ticker/${instId}`, params }, options.signal);
   },
 
   // 获取所有行情
@@ -108,18 +272,35 @@ export const api = {
     return instance.get('/api/market/tickers', { params: { inst_type: instType } });
   },
 
-  // 获取K线数据
+  // 获取最新逐笔成交（支持 signal 取消）
+  async getRecentTrades(instId, options = {}) {
+    const params = {
+      limit: options.limit || 20,
+    };
+    if (options.instType) params.inst_type = options.instType;
+    return requestWithSignal({ method: 'get', url: `/api/market/trades/${instId}`, params }, options.signal);
+  },
+
+  // 获取盘口深度（支持 signal 取消）
+  async getOrderBook(instId, options = {}) {
+    const params = {
+      size: options.size || 20,
+    };
+    if (options.instType) params.inst_type = options.instType;
+    return requestWithSignal({ method: 'get', url: `/api/market/orderbook/${instId}`, params }, options.signal);
+  },
+
+  // 获取K线数据（支持 signal 取消）
   async getCandles(instId, options = {}) {
     const params = {
       timeframe: options.timeframe || '1H',
       limit: options.limit || 100,
-      source: options.source || 'local',
     };
     if (options.startTime) params.start_time = options.startTime;
     if (options.endTime) params.end_time = options.endTime;
     if (options.instType) params.inst_type = options.instType;
 
-    return instance.get(`/api/market/candles/${instId}`, { params });
+    return requestWithSignal({ method: 'get', url: `/api/market/candles/${instId}`, params }, options.signal);
   },
 
   // ==================== 技术指标 ====================
@@ -144,12 +325,55 @@ export const api = {
       timeframe: options.timeframe || '1H',
       days: options.days || 30,
       inst_type: options.instType || 'SPOT',
+      mode: options.mode || 'window',
     });
   },
 
   // 获取同步状态
   async getSyncStatus() {
     return instance.get('/api/market/sync/status');
+  },
+
+  async getDataGuardianStatus() {
+    return instance.get('/api/market/data-guardian/status');
+  },
+
+  async getDataGuardianConfig() {
+    return instance.get('/api/market/data-guardian/config');
+  },
+
+  async updateDataGuardianConfig(data) {
+    return instance.put('/api/market/data-guardian/config', data);
+  },
+
+  async runDataGuardianNow() {
+    return instance.post('/api/market/data-guardian/run-now');
+  },
+
+  async startSyncJob(instId, options = {}) {
+    return instance.post('/api/market/sync/jobs', {
+      inst_id: instId,
+      timeframe: options.timeframe || '1H',
+      days: options.days || 30,
+      inst_type: options.instType || 'SPOT',
+      mode: options.mode || 'window',
+    });
+  },
+
+  async getSyncJobs(params = {}) {
+    return request({
+      method: 'get',
+      url: '/api/market/sync/jobs',
+      params: {
+        active_only: !!params.activeOnly,
+        limit: params.limit || 20,
+        task_ids: params.taskIds || '',
+      },
+    });
+  },
+
+  async getSyncJob(taskId) {
+    return instance.get(`/api/market/sync/jobs/${taskId}`);
   },
 
   // ==================== 交易产品 ====================
@@ -162,6 +386,90 @@ export const api = {
   // 获取本地已有数据的交易对
   async getAvailableSymbols() {
     return instance.get('/api/market/symbols');
+  },
+
+  // 获取关注币种列表
+  async getWatchedSymbols() {
+    return instance.get('/api/market/watched-symbols');
+  },
+
+  // 添加关注币种，并触发全量同步
+  async addWatchedSymbol(symbol, options = {}) {
+    return instance.post('/api/market/watched-symbols', {
+      symbol,
+      sync_spot: options.syncSpot ?? true,
+      sync_swap: options.syncSwap ?? true,
+      archive_all_history: options.archiveAllHistory ?? false,
+    });
+  },
+
+  // 删除关注币种及其本地数据
+  async deleteWatchedSymbol(symbol) {
+    return instance.delete(`/api/market/watched-symbols/${encodeURIComponent(symbol)}`);
+  },
+
+  // 重新为关注币种发起后台回补
+  async repairWatchedSymbol(symbol, options = {}) {
+    return instance.post(`/api/market/watched-symbols/${encodeURIComponent(symbol)}/repair`, null, {
+      params: {
+        sync_spot: options.syncSpot ?? true,
+        sync_swap: options.syncSwap ?? true,
+      },
+    });
+  },
+
+  // 获取本地数据库库存目录
+  async getDataInventory() {
+    return instance.get('/api/market/inventory');
+  },
+
+  // 获取单币或全量本地数据健康状态
+  async getMarketDataHealth(params = {}) {
+    return instance.get('/api/market/data-health', {
+      params: {
+        symbol: params.symbol || '',
+        include_orphans: params.includeOrphans ?? true,
+      },
+    });
+  },
+
+  // 删除单币本地库存；若仍在关注列表中，可一并移除关注
+  async deleteInventorySymbol(symbol, options = {}) {
+    return instance.delete(`/api/market/inventory/symbols/${encodeURIComponent(symbol)}`, {
+      params: {
+        remove_watch: !!options.removeWatch,
+      },
+    });
+  },
+
+  // 清理所有未关注孤儿数据
+  async deleteOrphanInventory() {
+    return instance.delete('/api/market/inventory/orphans');
+  },
+
+  // 获取价格提醒列表
+  async getPriceAlerts(params = {}) {
+    return instance.get('/api/market/alerts', { params });
+  },
+
+  // 创建价格提醒
+  async createPriceAlert(data) {
+    return instance.post('/api/market/alerts', data);
+  },
+
+  // 更新价格提醒
+  async updatePriceAlert(alertId, data) {
+    return instance.patch(`/api/market/alerts/${alertId}`, data);
+  },
+
+  // 删除价格提醒
+  async deletePriceAlert(alertId) {
+    return instance.delete(`/api/market/alerts/${alertId}`);
+  },
+
+  // 市场相关性分析
+  async getMarketCorrelation(data) {
+    return instance.post('/api/market/correlation', data);
   },
 
   // ==================== 回测 ====================
@@ -181,10 +489,34 @@ export const api = {
     return instance.post('/api/backtest/strategies/reload');
   },
 
+  // 获取外部策略文件列表
+  async listExternalStrategyFiles() {
+    return instance.get('/api/backtest/external/files');
+  },
+
+  // 读取外部策略文件
+  async getExternalStrategyFile(filename) {
+    return instance.get(`/api/backtest/external/files/${encodeURIComponent(filename)}`);
+  },
+
+  // 保存外部策略文件
+  async saveExternalStrategyFile(data) {
+    return instance.post('/api/backtest/external/files', {
+      filename: data.filename,
+      source: data.source || '',
+    });
+  },
+
+  // 删除外部策略文件
+  async deleteExternalStrategyFile(filename) {
+    return instance.delete(`/api/backtest/external/files/${encodeURIComponent(filename)}`);
+  },
+
   // 通用策略回测
   async runBacktest(strategyId, params) {
     return instance.post(`/api/backtest/run/${strategyId}`, {
       symbol: params.symbol,
+      inst_type: params.instType || 'SPOT',
       timeframe: params.timeframe,
       days: params.days,
       initial_capital: params.initialCapital,
@@ -192,6 +524,24 @@ export const api = {
       stop_loss: params.stopLoss || 0.05,
       take_profit: params.takeProfit || 0.10,
       params: params.strategyParams || {},
+    });
+  },
+
+  // 策略参数扫描
+  async scanBacktest(strategyId, params) {
+    return instance.post(`/api/backtest/scan/${strategyId}`, {
+      symbol: params.symbol,
+      inst_type: params.instType || 'SPOT',
+      timeframe: params.timeframe,
+      days: params.days,
+      initial_capital: params.initialCapital,
+      position_size: params.positionSize || 0.5,
+      stop_loss: params.stopLoss || 0.05,
+      take_profit: params.takeProfit || 0.10,
+      metric: params.metric || 'total_return',
+      base_params: params.baseParams || {},
+      scan_params: params.scanParams || {},
+      persist_results: params.persistResults || false,
     });
   },
 
@@ -270,11 +620,42 @@ export const api = {
     return instance.post('/config/okx/test');
   },
 
+  // 获取 AI 助手配置
+  async getAssistantConfig() {
+    return instance.get('/config/assistant');
+  },
+
+  // 保存 AI 助手配置
+  async saveAssistantConfig(config) {
+    return instance.post('/config/assistant', {
+      enabled: !!config.enabled,
+      base_url: config.baseUrl || '',
+      api_key: config.apiKey || '',
+      model: config.model || '',
+      provider_name: config.providerName || '',
+    });
+  },
+
   // ==================== 交易 ====================
 
   // 获取交易模块状态
   async getTradingStatus(mode = 'simulated') {
     return instance.get('/api/trading/status', { params: { mode } });
+  },
+
+  // 获取风控配置
+  async getRiskControlConfig(mode = 'simulated') {
+    return instance.get('/api/trading/risk-control', { params: { mode } });
+  },
+
+  // 更新风控配置
+  async updateRiskControlConfig(data) {
+    return instance.put('/api/trading/risk-control', data);
+  },
+
+  // 获取风险摘要
+  async getRiskSummary(mode = 'simulated') {
+    return instance.get('/api/trading/risk-summary', { params: { mode } });
   },
 
   // 获取账户余额
@@ -392,9 +773,67 @@ export const api = {
     return instance.get('/api/trading/local-fills', { params });
   },
 
+  // 获取成交绩效统计
+  async getTradePerformance(mode = 'simulated', instId = '') {
+    const params = { mode };
+    if (instId) params.inst_id = instId;
+    return instance.get('/api/trading/performance', { params });
+  },
+
+  // 导出成交绩效 CSV
+  async exportTradePerformance(mode = 'simulated', instId = '') {
+    const params = { mode };
+    if (instId) params.inst_id = instId;
+    return instance.get('/api/trading/performance/export', {
+      params,
+      responseType: 'blob',
+      transformResponse: [(data) => data],
+    });
+  },
+
   // 重建成交记录表（修复精度问题后需要重新同步）
   async rebuildFillsTable() {
     return instance.post('/api/trading/fills/rebuild');
+  },
+
+  // ==================== 实时策略执行 ====================
+
+  // 获取可用于自动执行的策略
+  async getLiveAvailableStrategies() {
+    return instance.get('/api/live/available-strategies');
+  },
+
+  // 启动实时策略
+  async startLiveStrategy(data) {
+    return instance.post('/api/live/start', {
+      strategy_id: data.strategyId,
+      symbol: data.symbol,
+      timeframe: data.timeframe,
+      inst_type: data.instType || 'SPOT',
+      initial_capital: data.initialCapital,
+      position_size: data.positionSize,
+      stop_loss: data.stopLoss,
+      take_profit: data.takeProfit,
+      check_interval: data.checkInterval,
+      params: data.params || {},
+    });
+  },
+
+  // 停止实时策略
+  async stopLiveStrategy() {
+    return instance.post('/api/live/stop');
+  },
+
+  // 获取实时策略状态
+  async getLiveStrategyStatus() {
+    return instance.get('/api/live/status');
+  },
+
+  // 获取实时策略订单历史
+  async getLiveOrders(limit = 20, mode = '') {
+    return instance.get('/api/live/orders', {
+      params: { limit, mode }
+    });
   },
 
   // ==================== 合约交易 ====================
@@ -482,6 +921,114 @@ export const api = {
   async savePreferences(data) {
     return instance.post('/api/preferences', data);
   },
+
+  // ==================== 交易日志 ====================
+
+  // 创建日志条目
+  async createJournalEntry(data) {
+    return instance.post('/api/journal/entries', data);
+  },
+
+  // 查询日志列表
+  async getJournalEntries(params = {}) {
+    return instance.get('/api/journal/entries', { params });
+  },
+
+  // 获取单条日志
+  async getJournalEntry(entryId) {
+    return instance.get(`/api/journal/entries/${entryId}`);
+  },
+
+  // 更新日志
+  async updateJournalEntry(entryId, data) {
+    return instance.put(`/api/journal/entries/${entryId}`, data);
+  },
+
+  // 删除日志
+  async deleteJournalEntry(entryId) {
+    return instance.delete(`/api/journal/entries/${entryId}`);
+  },
+
+  // 获取标签列表
+  async getJournalTags() {
+    return instance.get('/api/journal/tags');
+  },
+
+  // 获取日志统计
+  async getJournalStats(params = {}) {
+    return instance.get('/api/journal/stats', { params });
+  },
+
+  // ==================== 风险指标 ====================
+
+  // 综合风险仪表盘
+  async getRiskMetrics(params = {}) {
+    return instance.get('/api/risk/metrics', { params });
+  },
+
+  // VaR 计算
+  async getRiskVar(params = {}) {
+    return instance.get('/api/risk/var', { params });
+  },
+
+  // 回撤分析
+  async getRiskDrawdown(params = {}) {
+    return instance.get('/api/risk/drawdown', { params });
+  },
+
+  // 滚动指标
+  async getRiskRolling(params = {}) {
+    return instance.get('/api/risk/rolling', { params });
+  },
+
+  // 权益快照
+  async getRiskSnapshots(params = {}) {
+    return instance.get('/api/risk/snapshots', { params });
+  },
+
+  // ==================== 市场扫描 ====================
+
+  // 创建扫描方案
+  async createScannerProfile(data) {
+    return instance.post('/api/scanner/profiles', data);
+  },
+
+  // 获取扫描方案列表
+  async getScannerProfiles() {
+    return instance.get('/api/scanner/profiles');
+  },
+
+  // 更新扫描方案
+  async updateScannerProfile(profileId, data) {
+    return instance.put(`/api/scanner/profiles/${profileId}`, data);
+  },
+
+  // 删除扫描方案
+  async deleteScannerProfile(profileId) {
+    return instance.delete(`/api/scanner/profiles/${profileId}`);
+  },
+
+  // 即时扫描
+  async runScan(data) {
+    return instance.post('/api/scanner/scan', data);
+  },
+
+  // 执行已保存方案
+  async runProfileScan(profileId) {
+    return instance.post(`/api/scanner/scan/${profileId}`);
+  },
+
+  // 获取扫描结果
+  async getScannerResults(params = {}) {
+    return instance.get('/api/scanner/results', { params });
+  },
+
+  // 获取可用条件类型
+  async getScannerConditions() {
+    return instance.get('/api/scanner/conditions');
+  },
 };
+
+export { createLatestOnly };
 
 export default api;

@@ -1,20 +1,23 @@
 <template>
   <div class="settings-view">
-    <div class="page-header">
-      <div class="header-content">
-        <h1>系统设置</h1>
-        <p>系统状态监控与配置管理</p>
+    <!-- 命令栏 -->
+    <header class="sv-command-bar">
+      <div class="sv-left">
+        <h1 class="sv-title">系统设置</h1>
+        <nav class="sv-tabs">
+          <button class="sv-tab" :class="{ active: settingsTab === 'config' }" @click="settingsTab = 'config'">配置管理</button>
+          <button class="sv-tab" :class="{ active: settingsTab === 'monitor' }" @click="settingsTab = 'monitor'">状态监控</button>
+        </nav>
       </div>
-      <div class="header-actions">
-        <button class="btn-refresh" :class="{ spinning: isRefreshing }" @click="refreshStatus" title="刷新状态">
-          <span class="refresh-icon">&#8635;</span>
-          <span>刷新</span>
+      <div class="sv-right">
+        <button class="btn btn-sm" :class="{ spinning: isRefreshing }" @click="refreshStatus" :disabled="isRefreshing">
+          {{ isRefreshing ? '刷新中' : '刷新' }}
         </button>
       </div>
-    </div>
+    </header>
 
-    <div class="settings-content">
-      <!-- 左侧：OKX 配置 (主要区域) -->
+    <!-- 配置管理 tab -->
+    <div v-show="settingsTab === 'config'" class="sv-panel">
       <div class="settings-main">
         <div class="card okx-config-card">
           <div class="card-header">
@@ -146,10 +149,123 @@
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- 右侧：状态面板 -->
-      <div class="settings-sidebar">
+        <div class="card assistant-config-card">
+          <div class="card-header">
+            <div class="header-left">
+              <span class="card-icon">&#129302;</span>
+              <h3 class="card-title">AI 助手配置</h3>
+            </div>
+            <span
+              class="status-badge"
+              :class="assistantConfig.enabled ? (assistantStatus.configured ? 'success' : 'warning') : 'error'"
+            >
+              {{ assistantConfig.enabled ? (assistantStatus.configured ? '已配置' : '待配置') : '已停用' }}
+            </span>
+          </div>
+
+          <div class="assistant-overview">
+            <div class="overview-item">
+              <span class="overview-label">当前模型</span>
+              <span class="overview-value assistant-value">
+                {{ assistantConfig.model || '--' }}
+              </span>
+            </div>
+            <div class="overview-item">
+              <span class="overview-label">服务商</span>
+              <span class="overview-value assistant-value">
+                {{ assistantConfig.providerName || '--' }}
+              </span>
+            </div>
+            <div class="overview-item">
+              <span class="overview-label">密钥状态</span>
+              <span class="overview-value" :class="assistantStatus.hasKey ? 'simulated' : 'live'">
+                {{ assistantStatus.hasKey ? '已保存' : '未保存' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="assistant-toggle-row">
+            <label class="checkbox-toggle">
+              <input v-model="assistantConfig.enabled" type="checkbox" />
+              <span>启用行情页 AI 助手与 Agent 分析</span>
+            </label>
+            <span class="mode-status" :class="{ configured: assistantStatus.configured }">
+              {{ assistantStatus.providerName || assistantConfig.providerName || 'OpenAI-Compatible' }}
+            </span>
+          </div>
+
+          <div class="credentials-section active assistant-credentials-section">
+            <div class="section-header">
+              <div class="section-title">
+                <span class="dot simulated"></span>
+                <span>AI 模型接入参数</span>
+              </div>
+            </div>
+            <div class="credentials-form assistant-form-grid">
+              <div class="form-row">
+                <label>Base URL</label>
+                <input
+                  type="text"
+                  v-model="assistantConfig.baseUrl"
+                  class="input"
+                  placeholder="https://api.openai.com/v1"
+                />
+              </div>
+              <div class="form-row">
+                <label>Provider</label>
+                <input
+                  type="text"
+                  v-model="assistantConfig.providerName"
+                  class="input"
+                  placeholder="OpenAI-Compatible"
+                />
+              </div>
+              <div class="form-row">
+                <label>Model</label>
+                <input
+                  type="text"
+                  v-model="assistantConfig.model"
+                  class="input"
+                  placeholder="gpt-4.1-mini"
+                />
+              </div>
+              <div class="form-row assistant-api-key-row">
+                <label>API Key</label>
+                <input
+                  type="password"
+                  v-model="assistantConfig.apiKey"
+                  class="input"
+                  placeholder="留空表示保留当前已保存密钥"
+                />
+                <span v-if="assistantStatus.apiKeyMasked" class="field-tip">
+                  当前已保存：{{ assistantStatus.apiKeyMasked }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" @click="saveAssistantConfig" :disabled="savingAssistantConfig">
+              {{ savingAssistantConfig ? '保存中...' : '保存 AI 配置' }}
+            </button>
+          </div>
+
+          <div class="config-tip">
+            <div class="tip-icon">&#9432;</div>
+            <div class="tip-content">
+              <p><strong>用途：</strong>该配置会直接驱动行情页 AI 助手、Agent 工具调用与会话分析。</p>
+              <p><strong>安全：</strong>输入框留空不会清空现有密钥，只会保留服务器已保存的值。</p>
+              <p><strong>建议：</strong>如果使用 OpenAI 兼容接口，优先填写完整的 Base URL、模型名和 API Key。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 状态监控 tab -->
+    <div v-show="settingsTab === 'monitor'" class="sv-panel">
+      <div class="monitor-grid">
         <!-- 系统状态 -->
         <div class="card">
           <div class="card-header compact">
@@ -315,9 +431,11 @@ import { api, updateBaseURL, getBaseURL } from '../services/api';
 import { useAppStore } from '../stores/app';
 
 // 状态
+const settingsTab = ref('config');
 const isConnected = ref(false);
 const isRefreshing = ref(false);
 const savingOKXConfig = ref(false);
+const savingAssistantConfig = ref(false);
 const testingOKXConnection = ref(false);
 
 // 后端地址
@@ -345,6 +463,22 @@ const okxConfig = reactive({
 const okxConfigStatus = reactive({
   demo: { isConfigured: false },
   live: { isConfigured: false },
+});
+
+const assistantConfig = reactive({
+  enabled: true,
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: '',
+  model: 'gpt-4.1-mini',
+  providerName: 'OpenAI-Compatible',
+});
+
+const assistantStatus = reactive({
+  configured: false,
+  enabled: true,
+  hasKey: false,
+  apiKeyMasked: '',
+  providerName: '',
 });
 
 // 系统状态
@@ -469,6 +603,25 @@ const loadOKXConfig = async () => {
   }
 };
 
+const loadAssistantConfig = async () => {
+  try {
+    const result = await api.getAssistantConfig();
+    assistantConfig.enabled = result.enabled !== false;
+    assistantConfig.baseUrl = result.base_url || 'https://api.openai.com/v1';
+    assistantConfig.apiKey = '';
+    assistantConfig.model = result.model || 'gpt-4.1-mini';
+    assistantConfig.providerName = result.provider_name || 'OpenAI-Compatible';
+
+    assistantStatus.configured = !!result.configured;
+    assistantStatus.enabled = result.enabled !== false;
+    assistantStatus.apiKeyMasked = result.api_key || '';
+    assistantStatus.hasKey = Boolean(result.api_key);
+    assistantStatus.providerName = result.provider_name || 'OpenAI-Compatible';
+  } catch (error) {
+    console.error('加载 AI 助手配置失败:', error);
+  }
+};
+
 // 保存OKX配置
 const saveOKXConfig = async () => {
   // 检查当前模式对应的配置是否填写完整
@@ -520,6 +673,43 @@ const testOKXConnection = async () => {
   }
 };
 
+const saveAssistantConfig = async () => {
+  const hasStoredKey = assistantStatus.hasKey;
+  const hasNewApiKey = assistantConfig.apiKey.trim();
+
+  if (assistantConfig.enabled && !hasNewApiKey && !hasStoredKey) {
+    alert('请填写 AI Assistant API Key');
+    return;
+  }
+
+  if (assistantConfig.enabled && !assistantConfig.model.trim()) {
+    alert('请填写 AI 模型名称');
+    return;
+  }
+
+  if (assistantConfig.enabled && !assistantConfig.baseUrl.trim()) {
+    alert('请填写 AI Base URL');
+    return;
+  }
+
+  savingAssistantConfig.value = true;
+  try {
+    const result = await api.saveAssistantConfig({
+      enabled: assistantConfig.enabled,
+      baseUrl: assistantConfig.baseUrl.trim(),
+      apiKey: assistantConfig.apiKey.trim(),
+      model: assistantConfig.model.trim(),
+      providerName: assistantConfig.providerName.trim(),
+    });
+    alert(result.message || 'AI 配置已保存');
+    await loadAssistantConfig();
+  } catch (error) {
+    alert('保存 AI 配置失败: ' + error.message);
+  } finally {
+    savingAssistantConfig.value = false;
+  }
+};
+
 // 保存后端地址
 const saveBackendUrl = () => {
   const url = backendUrl.value.trim();
@@ -543,6 +733,7 @@ onMounted(() => {
   loadBackendUrl();
   refreshStatus();
   loadOKXConfig();
+  loadAssistantConfig();
 });
 </script>
 
@@ -555,29 +746,88 @@ onMounted(() => {
   overflow: hidden;
 }
 
-/* 页面头部 */
-.page-header {
+/* 命令栏 */
+.sv-command-bar {
+  flex-shrink: 0;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
-  background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
-  border-bottom: 1px solid var(--border-color);
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.header-content h1 {
-  font-size: 24px;
+.sv-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.sv-title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 17px;
   font-weight: 700;
-  margin-bottom: 4px;
-  background: linear-gradient(135deg, var(--accent-color) 0%, var(--secondary-color) 100%);
+  white-space: nowrap;
+  background: linear-gradient(to right, var(--text-primary), var(--accent-color));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-.header-content p {
-  font-size: 13px;
+.sv-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sv-tab {
+  padding: 6px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.sv-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sv-tab.active {
+  color: #fff;
+  background: linear-gradient(135deg, #EA580C, #F7931A);
+  box-shadow: 0 0 16px -4px rgba(247, 147, 26, 0.4);
+}
+
+.sv-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* tab 面板 */
+.sv-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+/* 状态监控网格 */
+.monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
 }
 
 .btn-refresh {
@@ -615,18 +865,11 @@ onMounted(() => {
 }
 
 /* 主内容区 */
-.settings-content {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 24px;
-  padding: 24px;
-  overflow-y: auto;
-}
-
-/* 左侧主区域 */
 .settings-main {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
 /* 右侧边栏 */
@@ -646,7 +889,7 @@ onMounted(() => {
 }
 
 .card:hover {
-  border-color: rgba(245, 158, 11, 0.3);
+  border-color: rgba(247, 147, 26, 0.32);
 }
 
 .card-header {
@@ -703,9 +946,9 @@ onMounted(() => {
 }
 
 .status-badge.warning {
-  background: rgba(245, 158, 11, 0.15);
+  background: rgba(247, 147, 26, 0.15);
   color: var(--accent-color);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid rgba(247, 147, 26, 0.3);
 }
 
 .status-badge.error {
@@ -716,6 +959,10 @@ onMounted(() => {
 
 /* ========== OKX 配置卡片 ========== */
 .okx-config-card {
+  padding: 24px;
+}
+
+.assistant-config-card {
   padding: 24px;
 }
 
@@ -760,6 +1007,64 @@ onMounted(() => {
   font-family: var(--font-mono);
 }
 
+.overview-value.assistant-value {
+  color: var(--secondary-color);
+  font-size: 15px;
+}
+
+.assistant-overview {
+  display: flex;
+  gap: 24px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, var(--bg-tertiary) 0%, rgba(234, 88, 12, 0.08) 100%);
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+}
+
+.assistant-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.checkbox-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.checkbox-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-color);
+}
+
+.assistant-credentials-section {
+  opacity: 1;
+}
+
+.assistant-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.assistant-api-key-row {
+  grid-column: 1 / -1;
+}
+
+.field-tip {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
 /* 模式选择器 */
 .mode-selector {
   display: grid;
@@ -787,7 +1092,7 @@ onMounted(() => {
 .mode-option.active {
   border-color: var(--accent-color);
   background: var(--accent-bg);
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.15);
+  box-shadow: 0 0 20px rgba(247, 147, 26, 0.15);
 }
 
 .mode-option input[type="radio"] {
@@ -812,7 +1117,7 @@ onMounted(() => {
 
 .mode-icon.live {
   color: var(--color-danger);
-  text-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+  text-shadow: 0 0 10px rgba(239, 68, 68, 0.32);
 }
 
 .mode-info {
@@ -842,7 +1147,7 @@ onMounted(() => {
 }
 
 .mode-status.configured {
-  background: rgba(34, 197, 94, 0.15);
+  background: rgba(34, 197, 94, 0.14);
   color: var(--color-success);
 }
 
@@ -866,7 +1171,7 @@ onMounted(() => {
 .credentials-section.active {
   opacity: 1;
   border-color: var(--accent-color);
-  background: linear-gradient(135deg, var(--bg-tertiary) 0%, rgba(245, 158, 11, 0.05) 100%);
+  background: linear-gradient(135deg, var(--bg-tertiary) 0%, rgba(247, 147, 26, 0.07) 100%);
 }
 
 .section-header {
@@ -898,7 +1203,7 @@ onMounted(() => {
 
 .section-title .dot.live {
   background: var(--color-danger);
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.32);
 }
 
 .help-link {
@@ -914,7 +1219,7 @@ onMounted(() => {
 
 .help-link:hover {
   background: var(--secondary-color);
-  color: #fff;
+  color: #FFFFFF;
 }
 
 .credentials-form {
@@ -984,7 +1289,7 @@ onMounted(() => {
 
 .btn-primary {
   background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-hover) 100%);
-  color: #fff;
+  color: #FFFFFF;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -1134,17 +1439,17 @@ onMounted(() => {
 
 .rate-limit-progress.success {
   background: linear-gradient(90deg, var(--color-success) 0%, #16A34A 100%);
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.32);
 }
 
 .rate-limit-progress.warning {
   background: linear-gradient(90deg, var(--accent-color) 0%, #D97706 100%);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+  box-shadow: 0 0 8px rgba(247, 147, 26, 0.32);
 }
 
 .rate-limit-progress.error {
   background: linear-gradient(90deg, var(--color-danger) 0%, #DC2626 100%);
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.32);
 }
 
 /* 后端配置 */
@@ -1208,8 +1513,15 @@ onMounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .assistant-form-grid,
   .mode-selector {
     grid-template-columns: 1fr;
+  }
+
+  .assistant-overview,
+  .assistant-toggle-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .settings-sidebar {
