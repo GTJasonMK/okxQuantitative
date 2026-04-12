@@ -25,12 +25,18 @@ from .cache import (
     get_cached_storage,
     get_rate_limiter,
 )
+from .okx_outbound import (
+    get_okx_outbound_governor,
+    get_okx_outbound_timeline_store,
+)
+from .trend_research import get_trend_research_service
 from .trader import OKXAccount, OKXTrader, TradingManager, get_trading_manager
 from .websocket_manager import (
     OKXWebSocketManager,
     add_ws_restart_listener,
     get_ws_manager,
     restart_ws_manager,
+    stop_private_ws_manager,
     start_private_ws_manager,
     start_ws_manager,
     stop_ws_manager,
@@ -72,6 +78,15 @@ class AppContext:
     def rate_limiter(self) -> APIRateLimiter:
         return get_rate_limiter()
 
+    def okx_outbound_governor(self):
+        return get_okx_outbound_governor()
+
+    def okx_outbound_timeline(self):
+        return get_okx_outbound_timeline_store()
+
+    def trend_research(self):
+        return get_trend_research_service(self)
+
     # ========== WebSocket ==========
     def ws_manager(self, mode: Optional[str] = None) -> OKXWebSocketManager:
         return get_ws_manager(mode)
@@ -81,6 +96,9 @@ class AppContext:
 
     async def start_private_ws(self, mode: str):
         return await start_private_ws_manager(mode)
+
+    async def stop_private_ws(self, mode: str):
+        return await stop_private_ws_manager(mode)
 
     async def stop_ws(self, mode: Optional[str] = None):
         return await stop_ws_manager(mode)

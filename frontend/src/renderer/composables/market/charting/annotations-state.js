@@ -36,7 +36,6 @@ export function createMarketViewChartAnnotationState(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -624,6 +623,11 @@ export function createMarketViewChartAnnotationState(ctx) {
     clearChartAnnotationFrame(normalizedSymbol);
     clearChartAnnotationUpdateFrame(normalizedSymbol);
     clearChartDraftPreview(normalizedSymbol);
+    // 同步清理 LWC AnnotationManager
+    const lwcManager = ctx.lwcManagers?.get(normalizedSymbol);
+    if (lwcManager?.annotations) {
+      lwcManager.annotations.clear();
+    }
     if (chartInstances[normalizedSymbol]) {
       ctx.updateChart(normalizedSymbol, { annotationOnly: true });
     }
@@ -644,6 +648,12 @@ export function createMarketViewChartAnnotationState(ctx) {
       return 0;
     }
     setChartAnnotations(normalizedSymbol, nextAnnotations);
+    // 同步清理 LWC AnnotationManager 中对应 source 的标注
+    const lwcManager = ctx.lwcManagers?.get(normalizedSymbol);
+    if (lwcManager?.annotations) {
+      const sources = Array.isArray(source) ? source : [source];
+      lwcManager.annotations.clearBySource(sources);
+    }
     clearChartAnnotationFrame(normalizedSymbol);
     clearChartAnnotationUpdateFrame(normalizedSymbol);
     clearChartDraftPreview(normalizedSymbol);
@@ -671,6 +681,11 @@ export function createMarketViewChartAnnotationState(ctx) {
     clearChartDraftPreview(normalizedSymbol);
     if (removedAnnotation?.id && getSelectedChartAnnotationId(normalizedSymbol) === removedAnnotation.id) {
       setSelectedChartAnnotationId(normalizedSymbol, '');
+    }
+    // LWC 桥接
+    if (removedAnnotation?.id) {
+      const lwcManager = ctx.lwcManagers?.get(normalizedSymbol);
+      lwcManager?.annotations?.remove(removedAnnotation.id);
     }
     if (chartInstances[normalizedSymbol] && candlesData[normalizedSymbol]?.length) {
       ctx.updateChart(normalizedSymbol, { annotationOnly: true });
@@ -706,6 +721,9 @@ export function createMarketViewChartAnnotationState(ctx) {
     clearChartAnnotationFrame(normalizedSymbol);
     clearChartAnnotationUpdateFrame(normalizedSymbol);
     clearChartDraftPreview(normalizedSymbol);
+    // LWC 桥接
+    const lwcManager = ctx.lwcManagers?.get(normalizedSymbol);
+    lwcManager?.annotations?.remove(selectedId);
     if (chartInstances[normalizedSymbol] && candlesData[normalizedSymbol]?.length) {
       ctx.updateChart(normalizedSymbol, { annotationOnly: true });
     } else {

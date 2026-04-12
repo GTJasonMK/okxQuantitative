@@ -1,4 +1,24 @@
-import * as echarts from 'echarts';
+import { createKlineChartManager } from '@/composables/market/charting/lwc-kline';
+import { createChart, disposeChart } from '@/utils/chart';
+import {
+  buildTimeSeriesPoints,
+  createTimeSeriesChartManager,
+  toLwcTime,
+} from '@/utils/lwcTimeSeriesChart.mjs';
+
+const EQUITY_LINE_COLOR = '#F7931A';
+const EQUITY_TOP_COLOR = 'rgba(247, 147, 26, 0.28)';
+const EQUITY_BOTTOM_COLOR = 'rgba(247, 147, 26, 0.02)';
+const AXIS_TEXT_COLOR = '#8B949E';
+const TOOLTIP_TEXT_COLOR = '#C9D1D9';
+const GRID_LINE_COLOR = 'rgba(255, 255, 255, 0.08)';
+
+const formatChartTime = (time, formatDateTime) => {
+  if (typeof time === 'string') {
+    return time;
+  }
+  return formatDateTime(Number(time) * 1000);
+};
 
 export function useBacktestViewCharts(deps) {
   const {
@@ -10,328 +30,164 @@ export function useBacktestViewCharts(deps) {
     config,
     activeOverlayIndicators,
     overlayIndicatorOptions,
-    activeSecondaryIndicator,
-    secondaryIndicatorOptions,
     trades,
-    indicatorMap,
     scanResult,
     compareResults,
     compareScaleMode,
-    result,
     equityCurve,
     bottomTab,
-    formatAxisTime,
     formatDateTime,
-    formatPrice,
     formatMoney,
+    formatScanMetric,
     safeNum,
     getIndicatorColor,
-    ensureChartInstance,
-    buildTradeTooltipHtml,
-    getTradeIndexByTimestamp,
-    buildTradeScatterSeries,
-    getActiveSecondaryMeta,
-    buildSecondarySeries,
-    PRICE_UP_COLOR,
-    PRICE_DOWN_COLOR,
-    DEFAULT_TEXT,
-    MUTED_TEXT,
-    GRID_COLOR,
-    SURFACE_BG,
-    VOLUME_UP,
-    VOLUME_DOWN,
   } = deps;
-  let klineChart = null;
+
+  let klineManager = null;
   let equityChart = null;
   let scanHeatmapChart = null;
   let compareChart = null;
 
+  const ensureKlineChart = () => {
+    if (!klineChartRef.value) {
+      return null;
+    }
+    if (!klineManager) {
+      klineManager = createKlineChartManager({ mode: 'backtest' });
+      klineManager.init(klineChartRef.value);
+    }
+    return klineManager;
+  };
+
+  const ensureEquityChart = () => {
+    if (!equityChartRef.value) {
+      return null;
+    }
+    if (!equityChart) {
+      equityChart = createTimeSeriesChartManager();
+      equityChart.init(equityChartRef.value, {
+        scaleMargins: { top: 0.08, bottom: 0.18 },
+      });
+    }
+    return equityChart;
+  };
+
+  const ensureHeatmapChart = () => {
+    if (!scanHeatmapRef.value) {
+      return null;
+    }
+    if (!scanHeatmapChart) {
+      scanHeatmapChart = createChart(scanHeatmapRef.value);
+    }
+    return scanHeatmapChart;
+  };
+
+  const ensureCompareChart = () => {
+    if (!compareChartRef.value) {
+      return null;
+    }
+    if (!compareChart) {
+      compareChart = createTimeSeriesChartManager();
+      compareChart.init(compareChartRef.value, {
+        scaleMargins: { top: 0.08, bottom: 0.18 },
+      });
+    }
+    return compareChart;
+  };
+
   function renderKlineChart() {
-    if (!klineChartRef.value) return;
-
-    klineChart = ensureChartInstance(klineChartRef, klineChart);
-    if (!klineChart) return;
-
-    if (candles.value.length === 0) {
-      klineChart.clear();
+    const chartManager = ensureKlineChart();
+    if (!chartManager) {
       return;
     }
 
-    const categoryData = candles.value.map((item) => formatAxisTime(item.timestamp));
-    const priceData = candles.value.map((item) => [item.open, item.close, item.low, item.high]);
-    const volumeData = candles.value.map((item) => ({
-      value: item.volume,
-      itemStyle: {
-        color: item.close >= item.open ? VOLUME_UP : VOLUME_DOWN,
-      },
-    }));
+    if (candles.value.length === 0) {
+      chartManager.setData([], {
+        symbol: config?.symbol || '',
+        indicators: {},
+        fitContent: false,
+      });
+      chartManager.setMarkers([]);
+      return;
+    }
 
-    const overlaySeries = overlayIndicatorOptions.value
-      .filter((item) => activeOverlayIndicators.value.includes(item.key))
-      .map((item, index) => ({
-        name: item.label,
-        type: 'line',
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        data: indicatorMap[item.key] || [],
-        showSymbol: false,
-        connectNulls: true,
-        lineStyle: {
-          width: 1.4,
-          color: getIndicatorColor(item.key, index),
-        },
-      }));
+    const indicatorFlags = {};
+    for (const option of overlayIndicatorOptions.value) {
+      if (activeOverlayIndicators.value.includes(option.key)) {
+        indicatorFlags[option.key] = true;
+      }
+    }
 
-    const buySeries = buildTradeScatterSeries('buy');
-    const sellSeries = buildTradeScatterSeries('sell');
-    const secondaryMeta = getActiveSecondaryMeta();
-    const secondarySeries = buildSecondarySeries(secondaryMeta);
-    const volumeMaSeries = Array.isArray(indicatorMap.volume_ma)
-      ? {
-          name: '成交量均线',
-          type: 'line',
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: indicatorMap.volume_ma,
-          showSymbol: false,
-          connectNulls: true,
-          lineStyle: { width: 1.2, color: getIndicatorColor('volume_ma') },
-        }
-      : null;
+    chartManager.setData(candles.value, {
+      symbol: config?.symbol || '',
+      indicators: indicatorFlags,
+      fitContent: true,
+    });
 
-    const option = {
-      backgroundColor: 'transparent',
-      animation: false,
-      legend: {
-        top: 8,
-        right: 12,
-        textStyle: { color: DEFAULT_TEXT, fontSize: 11 },
-        itemWidth: 10,
-        itemHeight: 6,
-      },
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'cross' },
-        backgroundColor: SURFACE_BG,
-        borderColor: 'rgba(247, 147, 26, 0.18)',
-        textStyle: { color: DEFAULT_TEXT },
-        formatter: (params) => {
-          const candlePoint = params.find((item) => item.seriesType === 'candlestick');
-          const candle = candlePoint ? candles.value[candlePoint.dataIndex] : null;
-          if (!candle) return '';
-
-          const lines = [
-            `<div style="font-weight:600;margin-bottom:6px">${formatDateTime(candle.timestamp)}</div>`,
-            `开: ${formatPrice(candle.open)}`,
-            `高: ${formatPrice(candle.high)}`,
-            `低: ${formatPrice(candle.low)}`,
-            `收: ${formatPrice(candle.close)}`,
-            `量: ${formatMoney(candle.volume)}`,
-          ];
-
-          params.forEach((item) => {
-            if (item.seriesType === 'line' && item.seriesName !== '成交量均线') {
-              const value = Array.isArray(item.value) ? item.value[1] : item.value;
-              if (value === null || value === undefined || value === '-') return;
-              lines.push(`${item.marker}${item.seriesName}: ${safeNum(value).toFixed(4)}`);
-            }
-            if (item.seriesType === 'bar' && item.seriesName === 'MACD 柱') {
-              const value = Array.isArray(item.value) ? item.value[1] : item.value?.value ?? item.value;
-              if (value === null || value === undefined) return;
-              lines.push(`${item.marker}${item.seriesName}: ${safeNum(value).toFixed(4)}`);
-            }
-          });
-
-          return lines.join('<br/>');
-        },
-      },
-      axisPointer: {
-        link: [{ xAxisIndex: 'all' }],
-      },
-      grid: [
-        { left: 58, right: 22, top: 44, height: '50%' },
-        { left: 58, right: 22, top: '63%', height: '10%' },
-        { left: 58, right: 22, top: '78%', height: '14%' },
-      ],
-      xAxis: [
-        {
-          type: 'category',
-          data: categoryData,
-          boundaryGap: true,
-          axisLine: { lineStyle: { color: GRID_COLOR } },
-          axisLabel: { show: false },
-          splitLine: { show: false },
-        },
-        {
-          type: 'category',
-          gridIndex: 1,
-          data: categoryData,
-          boundaryGap: true,
-          axisLine: { lineStyle: { color: GRID_COLOR } },
-          axisLabel: { show: false },
-          splitLine: { show: false },
-        },
-        {
-          type: 'category',
-          gridIndex: 2,
-          data: categoryData,
-          boundaryGap: true,
-          axisLine: { lineStyle: { color: GRID_COLOR } },
-          axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-          splitLine: { show: false },
-        },
-      ],
-      yAxis: [
-        {
-          scale: true,
-          axisLine: { lineStyle: { color: GRID_COLOR } },
-          axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-          splitLine: { lineStyle: { color: 'rgba(38, 51, 65, 0.45)' } },
-        },
-        {
-          scale: true,
-          gridIndex: 1,
-          axisLine: { show: false },
-          axisLabel: { show: false },
-          splitLine: { show: false },
-        },
-        {
-          scale: true,
-          gridIndex: 2,
-          axisLine: { lineStyle: { color: GRID_COLOR } },
-          axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-          splitLine: { lineStyle: { color: 'rgba(38, 51, 65, 0.35)' } },
-          name: secondaryMeta?.label || '副图',
-          nameTextStyle: { color: MUTED_TEXT, fontSize: 10, padding: [0, 0, 6, 0] },
-        },
-      ],
-      dataZoom: [
-        {
-          type: 'inside',
-          xAxisIndex: [0, 1, 2],
-          start: 60,
-          end: 100,
-        },
-        {
-          type: 'slider',
-          xAxisIndex: [0, 1, 2],
-          bottom: 6,
-          height: 16,
-          borderColor: 'rgba(255,255,255,0.06)',
-          textStyle: { color: MUTED_TEXT },
-          fillerColor: 'rgba(247, 147, 26, 0.12)',
-          handleStyle: { color: '#F7931A' },
-        },
-      ],
-      series: [
-        {
-          name: 'K线',
-          type: 'candlestick',
-          data: priceData,
-          itemStyle: {
-            color: PRICE_UP_COLOR,
-            color0: PRICE_DOWN_COLOR,
-            borderColor: PRICE_UP_COLOR,
-            borderColor0: PRICE_DOWN_COLOR,
-          },
-        },
-        ...overlaySeries,
-        ...(buySeries ? [buySeries] : []),
-        ...(sellSeries ? [sellSeries] : []),
-        {
-          name: '成交量',
-          type: 'bar',
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: volumeData,
-        },
-        ...(volumeMaSeries ? [volumeMaSeries] : []),
-        ...secondarySeries,
-      ],
-    };
-
-    klineChart.setOption(option, true);
+    chartManager.setMarkers(
+      trades.value.map((trade) => ({
+        timestamp: trade.timestamp,
+        side: trade.side === 'buy' ? 'buy' : 'sell',
+      })),
+    );
   }
 
   function renderEquityChart() {
-    if (!equityChartRef.value) return;
-
-    equityChart = ensureChartInstance(equityChartRef, equityChart);
-    if (!equityChart) return;
-
-    if (equityCurve.value.length === 0) {
-      equityChart.clear();
+    const chartManager = ensureEquityChart();
+    if (!chartManager) {
       return;
     }
 
-    const option = {
-      animation: false,
-      backgroundColor: 'transparent',
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'line' },
-        backgroundColor: SURFACE_BG,
-        borderColor: 'rgba(247, 147, 26, 0.18)',
-        textStyle: { color: DEFAULT_TEXT },
-        formatter: (params) => {
-          const point = params[0];
-          if (!point) return '';
-          const item = equityCurve.value[point.dataIndex];
-          return [
-            `<div style="font-weight:600;margin-bottom:6px">${formatDateTime(item.timestamp)}</div>`,
-            `总权益: ${formatMoney(item.equity)}`,
-            `现金: ${formatMoney(item.cash)}`,
-            `持仓市值: ${formatMoney(item.positionValue)}`,
-          ].join('<br/>');
-        },
-      },
-      grid: {
-        left: 56,
-        right: 20,
-        top: 24,
-        bottom: 28,
-      },
-      xAxis: {
-        type: 'category',
-        data: equityCurve.value.map((item) => formatAxisTime(item.timestamp)),
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: 'value',
-        scale: true,
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-        splitLine: { lineStyle: { color: 'rgba(38, 51, 65, 0.35)' } },
-      },
-      series: [{
-        name: '净值',
-        type: 'line',
-        data: equityCurve.value.map((item) => item.equity),
-        showSymbol: false,
-        smooth: true,
-        lineStyle: { width: 2, color: '#F7931A' },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(247, 147, 26, 0.28)' },
-            { offset: 1, color: 'rgba(247, 147, 26, 0.02)' },
-          ]),
-        },
-      }],
-    };
+    const points = buildTimeSeriesPoints(equityCurve.value, (item) => ({
+      time: item.timestamp,
+      value: item.equity,
+    }));
+    if (points.length === 0) {
+      chartManager.clear();
+      return;
+    }
 
-    equityChart.setOption(option, true);
+    const detailsByTime = new Map(
+      equityCurve.value
+        .map((item) => [toLwcTime(item.timestamp), item])
+        .filter(([time]) => time !== null),
+    );
+
+    chartManager.setSeries([
+      {
+        key: 'equity',
+        label: '总权益',
+        type: 'area',
+        color: EQUITY_LINE_COLOR,
+        topColor: EQUITY_TOP_COLOR,
+        bottomColor: EQUITY_BOTTOM_COLOR,
+        data: points,
+        valueFormatter: (value) => formatMoney(value),
+      },
+    ], {
+      priceFormatter: (value) => formatMoney(value),
+      timeFormatter: (time) => formatChartTime(time, formatDateTime),
+      extraTooltipRows: (time) => {
+        const detail = detailsByTime.get(time);
+        if (!detail) {
+          return [];
+        }
+        return [
+          `现金: ${formatMoney(detail.cash)}`,
+          `持仓市值: ${formatMoney(detail.positionValue)}`,
+        ];
+      },
+    });
   }
 
   function renderScanHeatmap() {
-    if (!scanHeatmapRef.value) return;
-
-    scanHeatmapChart = ensureChartInstance(scanHeatmapRef, scanHeatmapChart);
-    if (!scanHeatmapChart) return;
+    const chart = ensureHeatmapChart();
+    if (!chart) {
+      return;
+    }
 
     if (!scanResult.heatmap?.points?.length) {
-      scanHeatmapChart.clear();
+      chart.clear();
       return;
     }
 
@@ -340,18 +196,20 @@ export function useBacktestViewCharts(deps) {
     const minValue = Math.min(...metricValues);
     const maxValue = Math.max(...metricValues);
 
-    scanHeatmapChart.setOption({
+    chart.setOption({
       animation: false,
       tooltip: {
         position: 'top',
-        backgroundColor: SURFACE_BG,
+        backgroundColor: 'rgba(15, 17, 21, 0.96)',
         borderColor: 'rgba(247, 147, 26, 0.18)',
-        textStyle: { color: DEFAULT_TEXT },
+        textStyle: { color: TOOLTIP_TEXT_COLOR },
         formatter: (params) => {
           const [xIndex, yIndex, value] = params.value;
           const xValue = scanResult.heatmap.x_values[xIndex];
           const yValue = scanResult.heatmap.y_values[yIndex] ?? '-';
-          const axisLabel = scanResult.heatmap.y_key ? `${scanResult.heatmap.x_key}=${xValue}<br/>${scanResult.heatmap.y_key}=${yValue}` : `${scanResult.heatmap.x_key}=${xValue}`;
+          const axisLabel = scanResult.heatmap.y_key
+            ? `${scanResult.heatmap.x_key}=${xValue}<br/>${scanResult.heatmap.y_key}=${yValue}`
+            : `${scanResult.heatmap.x_key}=${xValue}`;
           return `${axisLabel}<br/>${scanResult.metricLabel}: ${formatScanMetric(value)}`;
         },
       },
@@ -360,17 +218,17 @@ export function useBacktestViewCharts(deps) {
         type: 'category',
         data: scanResult.heatmap.x_values.map((value) => String(value)),
         name: scanResult.heatmap.x_key,
-        nameTextStyle: { color: MUTED_TEXT },
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: { color: MUTED_TEXT, fontSize: 10 },
+        nameTextStyle: { color: AXIS_TEXT_COLOR },
+        axisLine: { lineStyle: { color: GRID_LINE_COLOR } },
+        axisLabel: { color: AXIS_TEXT_COLOR, fontSize: 10 },
       },
       yAxis: {
         type: 'category',
         data: scanResult.heatmap.y_values.length > 0 ? scanResult.heatmap.y_values.map((value) => String(value)) : ['指标'],
         name: scanResult.heatmap.y_key || '',
-        nameTextStyle: { color: MUTED_TEXT },
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: { color: MUTED_TEXT, fontSize: 10 },
+        nameTextStyle: { color: AXIS_TEXT_COLOR },
+        axisLine: { lineStyle: { color: GRID_LINE_COLOR } },
+        axisLabel: { color: AXIS_TEXT_COLOR, fontSize: 10 },
       },
       visualMap: {
         min: minValue,
@@ -379,7 +237,7 @@ export function useBacktestViewCharts(deps) {
         orient: 'horizontal',
         left: 'center',
         bottom: 0,
-        textStyle: { color: MUTED_TEXT },
+        textStyle: { color: AXIS_TEXT_COLOR },
         inRange: {
           color: ['#233243', '#2f7ed8', '#F7931A', '#f6c85d', '#ef5350'],
         },
@@ -404,128 +262,59 @@ export function useBacktestViewCharts(deps) {
   }
 
   function renderCompareChart() {
-    if (!compareChartRef.value) return;
-
-    compareChart = ensureChartInstance(compareChartRef, compareChart);
-    if (!compareChart) return;
-
-    if (compareResults.value.length < 2) {
-      compareChart.clear();
+    const chartManager = ensureCompareChart();
+    if (!chartManager) {
       return;
     }
 
-    const timestampSet = new Set();
-    compareResults.value.forEach((item) => {
-      (item.equityCurve || []).forEach((point) => {
-        if (point?.timestamp) {
-          timestampSet.add(point.timestamp);
-        }
-      });
-    });
-
-    const axisTimestamps = Array.from(timestampSet).sort((left, right) => left - right);
-    if (axisTimestamps.length === 0) {
-      compareChart.clear();
+    if (compareResults.value.length < 2) {
+      chartManager.clear();
       return;
     }
 
     const normalizedMode = compareScaleMode.value === 'normalized';
-    const formatCompareMetric = (value) => (
-      normalizedMode ? `${safeNum(value).toFixed(2)}%` : formatMoney(value)
-    );
-
-    const compareSeries = compareResults.value.map((item, index) => {
-      const firstPoint = (item.equityCurve || []).find((point) => Number.isFinite(safeNum(point?.equity, NaN)));
-      const baselineEquity = firstPoint ? safeNum(firstPoint.equity, 0) : 0;
-      const equityByTimestamp = new Map(
-        (item.equityCurve || [])
-          .filter((point) => point?.timestamp)
-          .map((point) => [point.timestamp, safeNum(point.equity)])
-      );
-
-      return {
-        name: `${item.strategyName} #${item.id}`,
-        type: 'line',
-        showSymbol: false,
-        connectNulls: false,
-        smooth: true,
-        data: axisTimestamps.map((timestamp) => {
-          if (!equityByTimestamp.has(timestamp)) {
-            return null;
-          }
-          const equity = equityByTimestamp.get(timestamp);
-          if (!normalizedMode) {
-            return equity;
-          }
-          if (baselineEquity <= 0) {
-            return null;
-          }
-          return ((equity - baselineEquity) / baselineEquity) * 100;
-        }),
-        lineStyle: {
-          width: 1.8,
-          color: getIndicatorColor(`compare_${index}`, index),
-        },
-      };
-    });
-
-    compareChart.setOption({
-      animation: false,
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'line' },
-        backgroundColor: SURFACE_BG,
-        borderColor: 'rgba(247, 147, 26, 0.18)',
-        textStyle: { color: DEFAULT_TEXT },
-        formatter: (params) => {
-          if (!params?.length) {
-            return '';
-          }
-          const timestamp = axisTimestamps[params[0].dataIndex];
-          const lines = [
-            `<div style="font-weight:600;margin-bottom:6px">${formatDateTime(timestamp)}</div>`,
-          ];
-          params.forEach((item) => {
-            const value = Array.isArray(item.value) ? item.value[1] : item.value;
-            if (value === null || value === undefined || value === '-') {
-              return;
+    const series = compareResults.value
+      .map((item, index) => {
+        const baseline = Number(item.equityCurve?.find((point) => Number.isFinite(safeNum(point?.equity, Number.NaN)))?.equity || 0);
+        const points = buildTimeSeriesPoints(item.equityCurve || [], (point) => {
+          const equity = safeNum(point?.equity);
+          if (normalizedMode) {
+            if (baseline <= 0) {
+              return null;
             }
-            lines.push(`${item.marker}${item.seriesName}: ${formatCompareMetric(value)}`);
-          });
-          return lines.join('<br/>');
-        },
-      },
-      legend: {
-        top: 8,
-        textStyle: { color: DEFAULT_TEXT, fontSize: 11 },
-      },
-      grid: {
-        left: 56,
-        right: 20,
-        top: 40,
-        bottom: 30,
-      },
-      xAxis: {
-        type: 'category',
-        data: axisTimestamps.map((timestamp) => formatAxisTime(timestamp)),
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: { color: MUTED_TEXT, fontSize: 10 },
-      },
-      yAxis: {
-        type: 'value',
-        scale: true,
-        name: normalizedMode ? '归一化收益' : '权益',
-        nameTextStyle: { color: MUTED_TEXT, fontSize: 10, padding: [0, 0, 4, 0] },
-        axisLine: { lineStyle: { color: GRID_COLOR } },
-        axisLabel: {
-          color: MUTED_TEXT,
-          fontSize: 10,
-          formatter: (value) => (normalizedMode ? `${safeNum(value).toFixed(0)}%` : formatMoney(value)),
-        },
-        splitLine: { lineStyle: { color: 'rgba(38, 51, 65, 0.35)' } },
-      },
-      series: compareSeries,
-    }, true);
+            return {
+              time: point.timestamp,
+              value: ((equity - baseline) / baseline) * 100,
+            };
+          }
+          return {
+            time: point.timestamp,
+            value: equity,
+          };
+        });
+        if (points.length === 0) {
+          return null;
+        }
+        return {
+          key: `compare-${item.id}`,
+          label: `${item.strategyName} #${item.id}`,
+          type: 'line',
+          color: getIndicatorColor(`compare_${index}`, index),
+          data: points,
+          valueFormatter: (value) => (normalizedMode ? `${safeNum(value).toFixed(2)}%` : formatMoney(value)),
+        };
+      })
+      .filter(Boolean);
+
+    if (series.length < 2) {
+      chartManager.clear();
+      return;
+    }
+
+    chartManager.setSeries(series, {
+      priceFormatter: (value) => (normalizedMode ? `${safeNum(value).toFixed(2)}%` : formatMoney(value)),
+      timeFormatter: (time) => formatChartTime(time, formatDateTime),
+    });
   }
 
   function renderAllCharts() {
@@ -545,5 +334,21 @@ export function useBacktestViewCharts(deps) {
     renderScanHeatmap,
     renderCompareChart,
     renderAllCharts,
+    resizeAllCharts() {
+      klineManager?.resize();
+      equityChart?.resize();
+      scanHeatmapChart?.resize();
+      compareChart?.resize();
+    },
+    disposeAllCharts() {
+      klineManager?.dispose();
+      klineManager = null;
+      equityChart?.dispose();
+      equityChart = null;
+      compareChart?.dispose();
+      compareChart = null;
+      disposeChart(scanHeatmapChart);
+      scanHeatmapChart = null;
+    },
   };
 }

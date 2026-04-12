@@ -1,0 +1,185 @@
+.trend-training-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.trend-training-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.trend-training-header h4,
+.trend-training-section-head h5 {
+  margin: 0;
+}
+
+.trend-training-header p,
+.trend-training-section-head span,
+.trend-training-meta,
+.trend-training-stage-focus-desc,
+.trend-training-stage-focus-message,
+.trend-training-stage-focus-meta {
+  color: var(--text-secondary, #94a3b8);
+}
+
+.trend-training-header p,
+.trend-training-stage-focus-desc,
+.trend-training-stage-focus-message {
+  margin: 4px 0 0;
+}
+
+.trend-training-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.trend-training-status,
+.trend-training-section-head span {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+  font-size: 12px;
+}
+
+.trend-training-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  font-size: 12px;
+}
+
+.trend-training-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trend-training-summary-card,
+.trend-training-stage-focus,
+.trend-training-stage-timeline,
+.trend-training-curves-section,
+.trend-training-metrics {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.trend-training-summary-card {
+  display: grid;
+  gap: 4px;
+}
+
+.trend-training-summary-card span,
+.trend-training-stage-focus-stat span,
+.trend-training-metric-card span {
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12px;
+}
+
+.trend-training-summary-card strong,
+.trend-training-stage-focus-stat strong,
+.trend-training-metric-card strong {
+  font-size: 16px;
+}
+
+.trend-training-main {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.trend-training-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.trend-training-stage-focus {
+  display: grid;
+  gap: 10px;
+}
+
+.trend-training-stage-focus-title {
+  font-size: 18px;
+}
+
+.trend-training-stage-focus-meta,
+.trend-training-stage-focus-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+.trend-training-stage-focus-stat {
+  min-width: 120px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.72);
+}
+
+.trend-training-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 14px;
+}
+
+.trend-training-curves-section {
+  display: grid;
+  gap: 10px;
+}
+
+.trend-training-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trend-training-metric-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.72);
+}
+
+@media (max-width: 1120px) {
+  .trend-training-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trend-training-main,
+  .trend-training-bottom {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .trend-training-header {
+    display: grid;
+  }
+
+  .trend-training-actions {
+    justify-content: flex-start;
+  }
+
+  .trend-training-summary,
+  .trend-training-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trend-training-meta,
+  .trend-training-stage-focus-meta,
+  .trend-training-stage-focus-stats {
+    display: grid;
+  }
+}

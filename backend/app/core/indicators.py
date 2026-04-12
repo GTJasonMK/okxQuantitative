@@ -16,22 +16,18 @@ class IndicatorResult:
 
 def sma(prices: List[float], period: int) -> List[float]:
     """
-    简单移动平均线 (Simple Moving Average)
-
-    Args:
-        prices: 价格序列
-        period: 周期
-
-    Returns:
-        SMA值列表，前period-1个为None表示的float('nan')
+    简单移动平均线 — 滑动窗口 O(n)
     """
     if len(prices) < period:
         return [float('nan')] * len(prices)
 
     result = [float('nan')] * (period - 1)
-    for i in range(period - 1, len(prices)):
-        avg = sum(prices[i - period + 1:i + 1]) / period
-        result.append(avg)
+    window_sum = sum(prices[:period])
+    result.append(window_sum / period)
+
+    for i in range(period, len(prices)):
+        window_sum += prices[i] - prices[i - period]
+        result.append(window_sum / period)
     return result
 
 
@@ -169,30 +165,37 @@ def bollinger_bands(
     num_std: float = 2.0
 ) -> Tuple[List[float], List[float], List[float]]:
     """
-    布林带 (Bollinger Bands)
-
-    Args:
-        prices: 价格序列
-        period: 周期，默认20
-        num_std: 标准差倍数，默认2
-
-    Returns:
-        (上轨, 中轨, 下轨) 三个列表
+    布林带 — Welford 滑动窗口 O(n)
     """
-    middle = sma(prices, period)
-    upper = []
-    lower = []
+    n = len(prices)
+    upper = [float('nan')] * n
+    middle = [float('nan')] * n
+    lower = [float('nan')] * n
 
-    for i in range(len(prices)):
-        if math.isnan(middle[i]):
-            upper.append(float('nan'))
-            lower.append(float('nan'))
-        else:
-            # 计算标准差
-            window = prices[i - period + 1:i + 1]
-            std = (sum((p - middle[i]) ** 2 for p in window) / period) ** 0.5
-            upper.append(middle[i] + num_std * std)
-            lower.append(middle[i] - num_std * std)
+    if n < period:
+        return upper, middle, lower
+
+    window_sum = 0.0
+    window_sq_sum = 0.0
+
+    for i in range(n):
+        window_sum += prices[i]
+        window_sq_sum += prices[i] * prices[i]
+
+        if i < period - 1:
+            continue
+
+        if i >= period:
+            dropped = prices[i - period]
+            window_sum -= dropped
+            window_sq_sum -= dropped * dropped
+
+        mean = window_sum / period
+        variance = max(window_sq_sum / period - mean * mean, 0.0)
+        std = math.sqrt(variance)
+        middle[i] = mean
+        upper[i] = mean + num_std * std
+        lower[i] = mean - num_std * std
 
     return upper, middle, lower
 

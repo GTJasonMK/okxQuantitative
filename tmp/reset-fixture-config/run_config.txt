@@ -1,0 +1,61 @@
+
+================================================
+       OKX Quantitative Trading System
+        Reset Local Runtime State
+================================================
+
+ The following local runtime state will be removed:
+
+   [Database]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db [2 bytes]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db-wal [3 bytes]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db-shm [3 bytes]
+
+   [Runtime Config]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\config\user_preferences.json [2 bytes]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\config\risk_control.json [2 bytes]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\config\market_alerts.json [2 bytes]
+
+   [Trend Research Artifacts]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\trend_research*.json
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\trend_research*.pt
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\data\*.tmp
+
+   [Logs]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\logs
+
+   [Electron User Data]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\appdata\Fixture Product
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\appdata\fixture-app-name
+
+   [Config]
+     - E:\Code\okxQuantitative\tmp\reset-fixture-config\config\.env [2 bytes]
+
+
+ [Resetting...]
+
+   Stopping services...
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db-wal
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\market.db-shm
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\config\user_preferences.json
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\config\risk_control.json
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\config\market_alerts.json
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\trend_research*.json
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\trend_research*.pt
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\data\*.tmp
+   [OK] Cleared E:\Code\okxQuantitative\tmp\reset-fixture-config\logs
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\appdata\Fixture Product
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\appdata\fixture-app-name
+   [OK] Deleted E:\Code\okxQuantitative\tmp\reset-fixture-config\config\.env
+
+================================================
+             Reset Complete
+================================================
+
+ The local runtime state has been cleared.
+
+ [NOTE] Remember to recreate config\.env before using API features.
+
+ Run start.bat to start the system.
+

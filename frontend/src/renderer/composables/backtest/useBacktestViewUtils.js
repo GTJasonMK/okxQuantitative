@@ -1,5 +1,4 @@
 import { computed } from 'vue';
-import * as echarts from 'echarts';
 import { formatPrice } from '@/utils/formatting';
 
 export function useBacktestViewUtils(deps) {
@@ -20,8 +19,6 @@ export function useBacktestViewUtils(deps) {
     INDICATOR_COLORS,
     PRIMARY_OVERLAY_ORDER,
     SECONDARY_PANEL_ORDER,
-    PRICE_UP_COLOR,
-    PRICE_DOWN_COLOR,
   } = deps;
 
   function safeNum(value, fallback = 0) {
@@ -437,10 +434,6 @@ export function useBacktestViewUtils(deps) {
     activeOverlayIndicators.value = [...activeOverlayIndicators.value, key];
   }
 
-  function getActiveSecondaryMeta() {
-    return secondaryIndicatorOptions.value.find((item) => item.key === activeSecondaryIndicator.value) || null;
-  }
-
   function formatMoney(value) {
     const numeric = safeNum(value);
     return new Intl.NumberFormat('zh-CN', {
@@ -547,180 +540,6 @@ export function useBacktestViewUtils(deps) {
     };
   }
 
-  function buildTradeTooltipHtml(trade) {
-    if (!trade) {
-      return '';
-    }
-
-    const lines = [
-      `<div style="font-weight:600;margin-bottom:4px">${trade.side === 'buy' ? '买入' : '卖出'}</div>`,
-      `时间: ${formatTime(trade.timestamp)}`,
-      `价格: ${formatPrice(trade.price)}`,
-      `数量: ${safeNum(trade.quantity).toFixed(6)}`,
-      `金额: ${formatMoney(trade.value)}`,
-      `手续费: ${formatMoney(trade.commission)}`,
-      `盈亏: ${trade.pnl === null ? '-' : formatMoney(trade.pnl)}`,
-    ];
-
-    if (trade.reason) {
-      lines.push(`原因: ${trade.reason}`);
-    }
-
-    const { entries, truncated } = getTradeMetadataEntries(trade);
-    entries.forEach(([key, value]) => {
-      lines.push(`${formatIndicatorLabel(key)}: ${formatMetadataValue(value)}`);
-    });
-    if (truncated) {
-      lines.push('更多指标已省略...');
-    }
-
-    return lines.join('<br/>');
-  }
-
-  function getTradeIndexByTimestamp(timestamp) {
-    if (candles.value.length === 0) return -1;
-    let closestIndex = 0;
-    let closestDelta = Math.abs(candles.value[0].timestamp - timestamp);
-    for (let index = 1; index < candles.value.length; index += 1) {
-      const delta = Math.abs(candles.value[index].timestamp - timestamp);
-      if (delta < closestDelta) {
-        closestDelta = delta;
-        closestIndex = index;
-      }
-    }
-    return closestIndex;
-  }
-
-  function ensureChartInstance(refEl, instance) {
-    if (!refEl?.value) {
-      return instance;
-    }
-    if (instance) {
-      return instance;
-    }
-    return echarts.init(refEl.value, 'dark', {
-      renderer: 'canvas',
-      useDirtyRect: true,
-    });
-  }
-
-  function buildTradeScatterSeries(side) {
-    const sideTrades = trades.value.filter((trade) => trade.side === side);
-    if (sideTrades.length === 0) return null;
-    return {
-      name: side === 'buy' ? '买入信号' : '卖出信号',
-      type: 'scatter',
-      xAxisIndex: 0,
-      yAxisIndex: 0,
-      symbol: 'triangle',
-      symbolSize: 13,
-      symbolRotate: side === 'buy' ? 0 : 180,
-      z: 9,
-      tooltip: {
-        trigger: 'item',
-        formatter: (params) => {
-          const trade = params.data?.trade;
-          if (!trade) return params.seriesName;
-          return buildTradeTooltipHtml(trade);
-        },
-      },
-      itemStyle: {
-        color: side === 'buy' ? PRICE_UP_COLOR : PRICE_DOWN_COLOR,
-      },
-      data: sideTrades
-        .map((trade) => {
-          const index = getTradeIndexByTimestamp(trade.timestamp);
-          if (index < 0) return null;
-          return {
-            value: [index, trade.price],
-            trade,
-          };
-        })
-        .filter(Boolean),
-    };
-  }
-
-  function buildSecondarySeries(meta) {
-    if (!meta) {
-      return [];
-    }
-
-    if (meta.key === 'macd') {
-      const dif = indicatorMap.dif || [];
-      const dea = indicatorMap.dea || [];
-      const histogram = indicatorMap.histogram || [];
-      return [
-        {
-          name: 'MACD 柱',
-          type: 'bar',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: histogram.map((value) => ({
-            value,
-            itemStyle: {
-              color: safeNum(value) >= 0 ? PRICE_UP_COLOR : PRICE_DOWN_COLOR,
-            },
-          })),
-        },
-        {
-          name: 'DIF',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: dif,
-          showSymbol: false,
-          connectNulls: true,
-          lineStyle: { width: 1.4, color: getIndicatorColor('dif') },
-        },
-        {
-          name: 'DEA',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: dea,
-          showSymbol: false,
-          connectNulls: true,
-          lineStyle: { width: 1.4, color: getIndicatorColor('dea') },
-        },
-      ];
-    }
-
-    return meta.seriesKeys.map((seriesKey, index) => ({
-      name: formatIndicatorLabel(seriesKey),
-      type: 'line',
-      xAxisIndex: 2,
-      yAxisIndex: 2,
-      data: indicatorMap[seriesKey] || [],
-      showSymbol: false,
-      connectNulls: true,
-      lineStyle: {
-        width: 1.6,
-        color: getIndicatorColor(seriesKey, index),
-      },
-      markLine: meta.key === 'rsi'
-        ? {
-            symbol: 'none',
-            lineStyle: {
-              type: 'dashed',
-              color: 'rgba(201, 209, 217, 0.28)',
-            },
-            label: { show: false },
-            data: [{ yAxis: 30 }, { yAxis: 70 }],
-          }
-        : meta.key === 'kdj'
-          ? {
-              symbol: 'none',
-              lineStyle: {
-                type: 'dashed',
-                color: 'rgba(201, 209, 217, 0.22)',
-              },
-              label: { show: false },
-              data: [{ yAxis: 20 }, { yAxis: 80 }],
-            }
-          : undefined,
-    }));
-  }
-
   return {
     symbols,
     currentStrategy,
@@ -752,7 +571,6 @@ export function useBacktestViewUtils(deps) {
     buildScanValues,
     syncIndicatorSelections,
     toggleOverlayIndicator,
-    getActiveSecondaryMeta,
     formatPrice,
     formatMoney,
     formatPercent,
@@ -764,10 +582,5 @@ export function useBacktestViewUtils(deps) {
     formatScanMetric,
     formatMetadataValue,
     getTradeMetadataEntries,
-    buildTradeTooltipHtml,
-    getTradeIndexByTimestamp,
-    ensureChartInstance,
-    buildTradeScatterSeries,
-    buildSecondarySeries,
   };
 }

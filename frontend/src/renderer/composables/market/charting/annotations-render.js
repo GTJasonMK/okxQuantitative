@@ -36,7 +36,6 @@ export function createMarketViewChartAnnotationRender(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -593,6 +592,8 @@ export function createMarketViewChartAnnotationRender(ctx) {
   );
 
   buildDraftPreviewPoint = (chart, candleIndex, price) => {
+    // LWC 实例没有 convertToPixel（标注已迁移到 lwc-annotations.js）
+    if (typeof chart.convertToPixel !== 'function') return null;
     const pixel = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [candleIndex, price]);
     if (!Array.isArray(pixel) || pixel.length < 2) {
       return null;
@@ -899,6 +900,10 @@ export function createMarketViewChartAnnotationRender(ctx) {
   renderChartDraftPreview = (symbol) => {
     const chart = chartInstances[symbol];
     if (!chart) {
+      return;
+    }
+    // LWC 实例的标注由 lwc-annotations.js 管理，旧 ECharts 绘制逻辑跳过
+    if (typeof chart.setOption !== 'function') {
       return;
     }
 

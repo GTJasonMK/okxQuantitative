@@ -3,6 +3,7 @@
 
 import axios from 'axios';
 import { createLatestOnly } from '../utils/async';
+import { resolveRuntimeBackendUrl } from '../utils/runtimeConfig.mjs';
 
 const inflightGetRequests = new Map();
 
@@ -28,16 +29,16 @@ const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8000';
 
 // 获取后端地址（优先从localStorage读取用户配置）
 const getBackendUrl = () => {
+  let savedUrl = '';
   try {
-    // 统一使用 'backend-url' 键（与 SettingsView.vue 保持一致）
-    const saved = localStorage.getItem('backend-url');
-    if (saved) {
-      return saved;
-    }
+    savedUrl = localStorage.getItem('backend-url') || '';
   } catch (e) {
     console.warn('读取后端地址配置失败，使用默认值');
   }
-  return DEFAULT_BACKEND_URL;
+  return resolveRuntimeBackendUrl({
+    defaultUrl: DEFAULT_BACKEND_URL,
+    savedUrl,
+  });
 };
 
 // 创建axios实例
@@ -62,15 +63,10 @@ export const getBaseURL = () => {
   return instance.defaults.baseURL;
 };
 
-// 请求拦截器
+// 请求拦截器（生产环境不打日志，避免高频请求拖慢主线程）
 instance.interceptors.request.use(
-  (config) => {
-    console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`);
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (config) => config,
+  (error) => Promise.reject(error)
 );
 
 const request = async (config) => {
@@ -111,11 +107,12 @@ const requestWithSignal = async (config, signal) => {
 
 // 响应拦截器
 instance.interceptors.response.use(
-  (response) => {
-    return response.data;
-  },
+  (response) => response.data,
   (error) => {
-    console.error('[API Error]', error.message);
+    // 只对非 abort 错误打日志，避免 createLatestOnly 取消时刷屏
+    if (error?.name !== 'AbortError' && error?.code !== 'ERR_CANCELED') {
+      console.error('[API Error]', error.message);
+    }
     return Promise.reject(error);
   }
 );
@@ -150,6 +147,70 @@ export const api = {
   // 获取系统状态
   async getSystemStatus() {
     return instance.get('/status');
+  },
+
+  async getOkxOutboundTimeline(params = {}) {
+    return instance.get('/api/system/okx-outbound-timeline', { params });
+  },
+
+  async getTrendResearchInference(params = {}) {
+    return instance.get('/api/trend-research/inference', { params });
+  },
+
+  async getTrendResearchProcess(params = {}) {
+    return instance.get('/api/trend-research/process', { params });
+  },
+
+  async getTrendDiagnostics(params = {}, options = {}) {
+    return requestWithSignal({
+      dedupe: false,
+      method: 'get',
+      url: '/api/trend-research/diagnostics',
+      params,
+    }, options.signal);
+  },
+
+  async getTrendResearchFactors(instId, params = {}, options = {}) {
+    return requestWithSignal({
+      dedupe: false,
+      method: 'get',
+      url: `/api/trend-research/factors/${instId}`,
+      params,
+    }, options.signal);
+  },
+
+  async getTrendResearchFactorSeries(instId, params = {}, options = {}) {
+    return requestWithSignal({
+      dedupe: false,
+      method: 'get',
+      url: `/api/trend-research/factor-series/${instId}`,
+      params,
+    }, options.signal);
+  },
+
+  async getTrendResearchFeatureBars(instId, params = {}, options = {}) {
+    return requestWithSignal({
+      dedupe: false,
+      method: 'get',
+      url: `/api/trend-research/feature-bars/${instId}`,
+      params,
+    }, options.signal);
+  },
+
+  async getTrendResearchConfig() {
+    return instance.get('/api/trend-research/config');
+  },
+
+  async getTrendResearchTrainingRun() {
+    return instance.get('/api/trend-research/training-run');
+  },
+
+  async retrainTrendResearchModel(params = {}) {
+    return instance.post('/api/trend-research/model/retrain', null, { params });
+  },
+
+  async updateTrendResearchConfig(data) {
+    return instance.put('/api/trend-research/config', data);
   },
 
   async getAssistantStatus() {

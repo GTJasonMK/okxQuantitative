@@ -17,6 +17,7 @@ except ImportError:
     print("警告: python-okx 未安装，部分功能不可用。请运行: pip install python-okx")
 
 from ..config import config
+from .okx_outbound import get_okx_outbound_governor
 from ..utils.timeframes import TIMEFRAME_TO_MS
 
 
@@ -189,13 +190,91 @@ def _parse_okx_candle_result(result: Dict[str, Any], error_prefix: str) -> List[
     return candles
 
 
+def _resolve_index_inst_id(inst_id: str) -> str:
+    normalized = str(inst_id or "").strip().upper()
+    if normalized.endswith("-SWAP"):
+        return normalized[:-5]
+    return normalized
+
+
+def _extract_okx_data_item(result: Dict[str, Any], error_prefix: str) -> Dict[str, Any]:
+    if result.get("code") != "0" or not result.get("data"):
+        raise ValueError(f"{error_prefix}: {result.get('msg', '未知错误')}")
+
+    item = result["data"][0]
+    if not isinstance(item, dict):
+        raise ValueError(f"{error_prefix}: 返回数据格式异常")
+    return item
+
+
+def _normalize_orderbook_levels(raw_levels: Any, level_limit: int) -> List[Dict[str, Any]]:
+    levels: List[Dict[str, Any]] = []
+    cumulative_size = 0.0
+
+    for item in raw_levels or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+
+        price = _safe_float(item[0])
+        size_value = _safe_float(item[1])
+        order_count = _safe_int(item[3]) if len(item) > 3 else 0
+
+        if price <= 0 or size_value < 0:
+            continue
+
+        cumulative_size += size_value
+        levels.append({
+            "price": price,
+            "size": size_value,
+            "total": cumulative_size,
+            "order_count": order_count,
+        })
+
+    return levels[:level_limit]
+
+
+def _build_orderbook_snapshot(
+    inst_id: str,
+    payload: Dict[str, Any],
+    requested_size: int,
+    source: str,
+) -> Dict[str, Any]:
+    asks = _normalize_orderbook_levels(payload.get("asks"), requested_size)
+    bids = _normalize_orderbook_levels(payload.get("bids"), requested_size)
+
+    best_ask = asks[0]["price"] if asks else 0.0
+    best_bid = bids[0]["price"] if bids else 0.0
+    spread = best_ask - best_bid if best_ask > 0 and best_bid > 0 else 0.0
+    mid_price = ((best_ask + best_bid) / 2.0) if best_ask > 0 and best_bid > 0 else 0.0
+    spread_rate = (spread / mid_price) if mid_price > 0 else 0.0
+    actual_size = min(len(asks), len(bids)) if asks and bids else max(len(asks), len(bids))
+
+    return {
+        "inst_id": inst_id,
+        "asks": asks,
+        "bids": bids,
+        "best_ask": best_ask,
+        "best_bid": best_bid,
+        "mid_price": mid_price,
+        "spread": spread,
+        "spread_rate": spread_rate,
+        "ask_depth_total": asks[-1]["total"] if asks else 0.0,
+        "bid_depth_total": bids[-1]["total"] if bids else 0.0,
+        "timestamp": _safe_int(payload.get("ts")),
+        "requested_size": requested_size,
+        "actual_size": actual_size,
+        "source": source,
+        "is_truncated": actual_size < requested_size,
+    }
+
+
 class DataFetcher:
     """
     数据获取器
     负责从OKX交易所获取各类行情数据
     """
 
-    def __init__(self, is_simulated: bool = True):
+    def __init__(self, is_simulated: bool = True, outbound=None):
         """
         初始化数据获取器
 
@@ -209,6 +288,19 @@ class DataFetcher:
         self.market_api = MarketData.MarketAPI(flag=flag)
         self.public_api = PublicData.PublicAPI(flag=flag)
         self.is_simulated = is_simulated
+        self._outbound = outbound or get_okx_outbound_governor()
+
+    def _run_public_rest(self, op_key: str, *, inst_id: str = "", operation):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return operation()
+        return outbound.execute_rest(
+            op_key=op_key,
+            scope_key="public_ip",
+            inst_id=inst_id,
+            mode="",
+            operation=operation,
+        )
 
     def get_ticker(self, inst_id: str) -> Optional[Ticker]:
         """
@@ -221,7 +313,11 @@ class DataFetcher:
             Ticker对象，获取失败返回None
         """
         try:
-            result = self.market_api.get_ticker(instId=inst_id)
+            result = self._run_public_rest(
+                "market.ticker",
+                inst_id=inst_id,
+                operation=lambda: self.market_api.get_ticker(instId=inst_id),
+            )
             if result["code"] != "0" or not result["data"]:
                 print(f"[DataFetcher] 获取 {inst_id} 行情失败: code={result.get('code')}, msg={result.get('msg', '未知错误')}")
                 return None
@@ -257,7 +353,10 @@ class DataFetcher:
             Ticker列表
         """
         try:
-            result = self.market_api.get_tickers(instType=inst_type.value)
+            result = self._run_public_rest(
+                "market.tickers",
+                operation=lambda: self.market_api.get_tickers(instType=inst_type.value),
+            )
             if result["code"] != "0":
                 print(f"获取行情列表失败: {result.get('msg', '未知错误')}")
                 return []
@@ -315,7 +414,11 @@ class DataFetcher:
 
         try:
             params = _build_okx_candle_params(inst_id, timeframe, limit, after=after, before=before)
-            result = self.market_api.get_candlesticks(**params)
+            result = self._run_public_rest(
+                "market.candles",
+                inst_id=inst_id,
+                operation=lambda: self.market_api.get_candlesticks(**params),
+            )
             return _parse_okx_candle_result(result, "获取K线失败")
 
         except Exception as e:
@@ -367,7 +470,11 @@ class DataFetcher:
                         page_limit,
                         after=after,
                     )
-                    result = history_api(**params)
+                    result = self._run_public_rest(
+                        "market.history_candles",
+                        inst_id=inst_id,
+                        operation=lambda: history_api(**params),
+                    )
                     batch = _parse_okx_candle_result(result, "获取历史K线失败")
                 except Exception as e:
                     print(f"获取历史K线异常: {e}")
@@ -426,7 +533,10 @@ class DataFetcher:
             交易产品信息列表
         """
         try:
-            result = self.public_api.get_instruments(instType=inst_type.value)
+            result = self._run_public_rest(
+                "public.instruments",
+                operation=lambda: self.public_api.get_instruments(instType=inst_type.value),
+            )
             if result["code"] != "0":
                 print(f"获取产品列表失败: {result.get('msg', '未知错误')}")
                 return []
@@ -460,9 +570,13 @@ class DataFetcher:
             MarketTrade 列表，按时间倒序（最新在前）
         """
         try:
-            result = self.market_api.get_trades(
-                instId=inst_id,
-                limit=str(min(max(limit, 1), 100)),
+            result = self._run_public_rest(
+                "market.trades",
+                inst_id=inst_id,
+                operation=lambda: self.market_api.get_trades(
+                    instId=inst_id,
+                    limit=str(min(max(limit, 1), 100)),
+                ),
             )
             if result["code"] != "0":
                 print(f"[DataFetcher] 获取 {inst_id} 最新成交失败: {result.get('msg', '未知错误')}")
@@ -487,6 +601,60 @@ class DataFetcher:
             print(f"[DataFetcher] 获取 {inst_id} 最新成交异常: {e}")
             return []
 
+    def get_mark_price(self, inst_id: str) -> Dict[str, Any]:
+        result = self._run_public_rest(
+            "market.mark_price",
+            inst_id=inst_id,
+            operation=lambda: self.public_api.get_mark_price(instType="SWAP", instId=inst_id),
+        )
+        item = _extract_okx_data_item(result, f"获取 {inst_id} 标记价格失败")
+        return {
+            "inst_id": item.get("instId", inst_id),
+            "mark_price": float(item.get("markPx", 0)),
+            "ts": int(item.get("ts", 0)),
+        }
+
+    def get_index_price(self, inst_id: str) -> Dict[str, Any]:
+        index_inst_id = _resolve_index_inst_id(inst_id)
+        result = self._run_public_rest(
+            "market.index_ticker",
+            inst_id=index_inst_id,
+            operation=lambda: self.market_api.get_index_tickers(instId=index_inst_id),
+        )
+        item = _extract_okx_data_item(result, f"获取 {inst_id} 指数价格失败")
+        return {
+            "inst_id": item.get("instId", inst_id),
+            "index_price": float(item.get("idxPx", 0)),
+            "ts": int(item.get("ts", 0)),
+        }
+
+    def get_open_interest(self, inst_id: str) -> Dict[str, Any]:
+        result = self._run_public_rest(
+            "market.open_interest",
+            inst_id=inst_id,
+            operation=lambda: self.public_api.get_open_interest(instType="SWAP", instId=inst_id),
+        )
+        item = _extract_okx_data_item(result, f"获取 {inst_id} 持仓量失败")
+        return {
+            "inst_id": item.get("instId", inst_id),
+            "open_interest": float(item.get("oi", 0)),
+            "ts": int(item.get("ts", 0)),
+        }
+
+    def get_funding_rate(self, inst_id: str) -> Dict[str, Any]:
+        result = self._run_public_rest(
+            "market.funding_rate",
+            inst_id=inst_id,
+            operation=lambda: self.public_api.get_funding_rate(instId=inst_id),
+        )
+        item = _extract_okx_data_item(result, f"获取 {inst_id} 资金费率失败")
+        return {
+            "inst_id": item.get("instId", inst_id),
+            "funding_rate": float(item.get("fundingRate", 0)),
+            "premium": float(item.get("premium", 0)),
+            "ts": int(item.get("ts", 0)),
+        }
+
     def get_orderbook(self, inst_id: str, size: int = 20) -> Optional[Dict[str, Any]]:
         """
         获取订单簿深度。
@@ -499,101 +667,52 @@ class DataFetcher:
             规范化后的盘口深度字典，失败返回 None
         """
         normalized_size = min(max(int(size or 20), 1), OKX_ORDERBOOK_FULL_MAX)
+        source = "books"
 
-        try:
-            source = "books"
-            payload: Optional[Dict[str, Any]] = None
-
-            if normalized_size > OKX_ORDERBOOK_STANDARD_MAX:
+        if normalized_size > OKX_ORDERBOOK_STANDARD_MAX:
+            try:
                 payload = self._get_full_orderbook_payload(inst_id, normalized_size)
+                if not payload:
+                    raise RuntimeError("books-full 返回空数据")
                 source = "books-full"
-                if not payload:
-                    print(
-                        f"[DataFetcher] 获取 {inst_id} {normalized_size} 档全量盘口失败，"
-                        f"回退到 {OKX_ORDERBOOK_STANDARD_MAX} 档标准盘口"
-                    )
-
-            if not payload:
-                standard_size = min(normalized_size, OKX_ORDERBOOK_STANDARD_MAX)
-                payload = self._get_standard_orderbook_payload(inst_id, standard_size)
-                if not payload:
-                    return None
-                if normalized_size > OKX_ORDERBOOK_STANDARD_MAX:
+            except Exception as exc:
+                print(
+                    f"[DataFetcher] 获取 {inst_id} {normalized_size} 档全量盘口失败，"
+                    f"回退到 {OKX_ORDERBOOK_STANDARD_MAX} 档标准盘口: {exc}"
+                )
+                try:
+                    payload = self._get_standard_orderbook_payload(inst_id, OKX_ORDERBOOK_STANDARD_MAX)
+                    if not payload:
+                        raise RuntimeError("标准盘口返回空数据")
                     source = "books-fallback"
+                except Exception as fallback_exc:
+                    raise RuntimeError(
+                        f"获取 {inst_id} 全量盘口失败: {exc}; "
+                        f"回退到 {OKX_ORDERBOOK_STANDARD_MAX} 档标准盘口也失败: {fallback_exc}"
+                    ) from fallback_exc
+        else:
+            payload = self._get_standard_orderbook_payload(inst_id, normalized_size)
 
-            def normalize_levels(raw_levels: Any) -> List[Dict[str, Any]]:
-                levels: List[Dict[str, Any]] = []
-                cumulative_size = 0.0
-
-                for item in raw_levels or []:
-                    if not isinstance(item, (list, tuple)) or len(item) < 2:
-                        continue
-
-                    price = _safe_float(item[0])
-                    size_value = _safe_float(item[1])
-                    order_count = _safe_int(item[3]) if len(item) > 3 else 0
-
-                    if price <= 0 or size_value < 0:
-                        continue
-
-                    cumulative_size += size_value
-                    levels.append({
-                        "price": price,
-                        "size": size_value,
-                        "total": cumulative_size,
-                        "order_count": order_count,
-                    })
-
-                return levels[:normalized_size]
-
-            asks = normalize_levels(payload.get("asks"))
-            bids = normalize_levels(payload.get("bids"))
-
-            best_ask = asks[0]["price"] if asks else 0.0
-            best_bid = bids[0]["price"] if bids else 0.0
-            spread = best_ask - best_bid if best_ask > 0 and best_bid > 0 else 0.0
-            mid_price = ((best_ask + best_bid) / 2.0) if best_ask > 0 and best_bid > 0 else 0.0
-            spread_rate = (spread / mid_price) if mid_price > 0 else 0.0
-            actual_size = min(len(asks), len(bids)) if asks and bids else max(len(asks), len(bids))
-
-            return {
-                "inst_id": inst_id,
-                "asks": asks,
-                "bids": bids,
-                "best_ask": best_ask,
-                "best_bid": best_bid,
-                "mid_price": mid_price,
-                "spread": spread,
-                "spread_rate": spread_rate,
-                "ask_depth_total": asks[-1]["total"] if asks else 0.0,
-                "bid_depth_total": bids[-1]["total"] if bids else 0.0,
-                "timestamp": _safe_int(payload.get("ts")),
-                "requested_size": normalized_size,
-                "actual_size": actual_size,
-                "source": source,
-                "is_truncated": actual_size < normalized_size,
-            }
-        except Exception as e:
-            print(f"[DataFetcher] 获取 {inst_id} 盘口异常: {e}")
-            return None
+        return _build_orderbook_snapshot(inst_id, payload, normalized_size, source)
 
     def _get_standard_orderbook_payload(self, inst_id: str, size: int) -> Optional[Dict[str, Any]]:
         """获取普通盘口，最大支持 400 档。"""
         try:
-            result = self.market_api.get_orderbook(
-                instId=inst_id,
-                sz=str(min(max(int(size or 20), 1), OKX_ORDERBOOK_STANDARD_MAX)),
+            result = self._run_public_rest(
+                "market.books",
+                inst_id=inst_id,
+                operation=lambda: self.market_api.get_orderbook(
+                    instId=inst_id,
+                    sz=str(min(max(int(size or 20), 1), OKX_ORDERBOOK_STANDARD_MAX)),
+                ),
             )
         except Exception as exc:
-            print(f"[DataFetcher] 获取 {inst_id} 标准盘口异常: {exc}")
-            return None
+            raise RuntimeError(f"获取 {inst_id} 标准盘口失败: {exc}") from exc
 
-        if result.get("code") != "0" or not result.get("data"):
-            print(f"[DataFetcher] 获取 {inst_id} 标准盘口失败: {result.get('msg', '未知错误')}")
-            return None
-
-        payload = result["data"][0]
-        return payload if isinstance(payload, dict) else None
+        try:
+            return _extract_okx_data_item(result, f"获取 {inst_id} 标准盘口失败")
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _get_full_orderbook_payload(self, inst_id: str, size: int) -> Optional[Dict[str, Any]]:
         """当请求档位超过普通 books 上限时，回退到 books-full。"""
@@ -601,18 +720,22 @@ class DataFetcher:
 
         for attempt in range(1, OKX_PUBLIC_HTTP_RETRY_COUNT + 1):
             try:
-                response = httpx.get(
-                    f"{OKX_PUBLIC_REST_BASE_URL}/api/v5/market/books-full",
-                    params={
-                        "instId": inst_id,
-                        "sz": str(normalized_size),
-                    },
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": "okxQuantitative/1.0",
-                    },
-                    timeout=OKX_PUBLIC_HTTP_TIMEOUT,
-                    follow_redirects=True,
+                response = self._run_public_rest(
+                    "market.books_full",
+                    inst_id=inst_id,
+                    operation=lambda: httpx.get(
+                        f"{OKX_PUBLIC_REST_BASE_URL}/api/v5/market/books-full",
+                        params={
+                            "instId": inst_id,
+                            "sz": str(normalized_size),
+                        },
+                        headers={
+                            "Accept": "application/json",
+                            "User-Agent": "okxQuantitative/1.0",
+                        },
+                        timeout=OKX_PUBLIC_HTTP_TIMEOUT,
+                        follow_redirects=True,
+                    ),
                 )
                 response.raise_for_status()
                 result = response.json()
@@ -621,23 +744,20 @@ class DataFetcher:
                 if attempt < OKX_PUBLIC_HTTP_RETRY_COUNT:
                     time.sleep(0.3 * attempt)
                     continue
-                return None
+                raise RuntimeError(f"获取 {inst_id} 全量盘口超时: {exc}") from exc
             except Exception as exc:
-                print(f"[DataFetcher] 获取 {inst_id} 全量盘口异常: {exc}")
-                return None
+                raise RuntimeError(f"获取 {inst_id} 全量盘口失败: {exc}") from exc
 
-            if result.get("code") != "0" or not result.get("data"):
-                print(f"[DataFetcher] 获取 {inst_id} 全量盘口失败: {result.get('msg', '未知错误')}")
-                return None
+            try:
+                return _extract_okx_data_item(result, f"获取 {inst_id} 全量盘口失败")
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
 
-            payload = result["data"][0]
-            return payload if isinstance(payload, dict) else None
-
-        return None
+        raise RuntimeError(f"获取 {inst_id} 全量盘口失败: 未获得可用响应")
 
 
 # 便捷函数
-def create_fetcher(is_simulated: bool = True) -> Optional[DataFetcher]:
+def create_fetcher(is_simulated: bool = True, outbound=None) -> Optional[DataFetcher]:
     """
     创建数据获取器实例
 
@@ -648,7 +768,7 @@ def create_fetcher(is_simulated: bool = True) -> Optional[DataFetcher]:
         DataFetcher实例，创建失败返回None
     """
     try:
-        return DataFetcher(is_simulated=is_simulated)
+        return DataFetcher(is_simulated=is_simulated, outbound=outbound)
     except ImportError as e:
         print(f"创建数据获取器失败 (依赖未安装): {e}")
         return None

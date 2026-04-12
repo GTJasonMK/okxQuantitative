@@ -195,7 +195,8 @@ class TestRiskAPI:
             )
 
         class FakeCtx:
-            storage = test_storage
+            def storage(self):
+                return test_storage
 
         monkeypatch.setattr("app.api.risk.get_app_context", lambda: FakeCtx())
         self.client = TestClient(app)

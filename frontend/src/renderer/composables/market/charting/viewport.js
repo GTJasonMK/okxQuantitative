@@ -36,7 +36,6 @@ export function createMarketViewChartViewport(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,

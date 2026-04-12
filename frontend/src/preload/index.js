@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 获取系统路径
   getPath: (name) => ipcRenderer.invoke('get-path', name),
 
+  getRuntimeConfig: () => ({
+    backendUrl: process.env.OKX_BACKEND_URL || '',
+    devServerUrl: process.env.OKX_DEV_SERVER_URL || '',
+  }),
+
   // 桌面通知
   showNotification: (payload) => ipcRenderer.invoke('show-notification', payload),
 

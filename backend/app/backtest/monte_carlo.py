@@ -1,10 +1,12 @@
 # 蒙特卡洛模拟模块
 # 通过重采样交易序列评估策略鲁棒性
+# 核心模拟已向量化为 numpy 矩阵操作
 
 import math
-import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -21,27 +23,23 @@ class MonteCarloResult:
     num_simulations: int
     original_final_equity: float
     original_max_drawdown: float
-    # 置信区间
-    equity_percentiles: Dict[str, float]     # {"5%": ..., "25%": ..., etc.}
+    equity_percentiles: Dict[str, float]
     drawdown_percentiles: Dict[str, float]
-    # 统计
     mean_final_equity: float
     std_final_equity: float
     median_final_equity: float
-    prob_profit: float           # 正收益概率
-    prob_original_beat: float    # 超越原始收益的概率
+    prob_profit: float
+    prob_original_beat: float
     worst_case_equity: float
     best_case_equity: float
 
 
 class MonteCarloSimulator:
     """
-    蒙特卡洛模拟器。
+    蒙特卡洛模拟器 — numpy 向量化。
 
-    方法：交易序列重采样（Bootstrap）
-    - 从原始回测的交易盈亏序列中有放回抽样
-    - 重新计算权益曲线和最大回撤
-    - 输出分布统计和置信区间
+    将 N 次模拟的有放回抽样、权益曲线构建、最大回撤计算
+    全部改为矩阵操作，避免 Python for 循环。
     """
 
     def run(
@@ -50,17 +48,6 @@ class MonteCarloSimulator:
         initial_capital: float,
         config: MonteCarloConfig,
     ) -> MonteCarloResult:
-        """
-        执行蒙特卡洛模拟。
-
-        Args:
-            trade_pnls: 原始回测的每笔交易盈亏列表
-            initial_capital: 初始资金
-            config: 模拟配置
-
-        Returns:
-            MonteCarloResult
-        """
         if not trade_pnls:
             return MonteCarloResult(
                 num_simulations=0,
@@ -77,47 +64,59 @@ class MonteCarloSimulator:
                 best_case_equity=initial_capital,
             )
 
-        rng = random.Random(config.seed)
-        n_trades = len(trade_pnls)
+        pnl_arr = np.array(trade_pnls, dtype=np.float64)
+        n_trades = pnl_arr.size
+        n_sims = config.num_simulations
+        rng = np.random.default_rng(config.seed)
 
         # 原始结果
-        original_equity = self._build_equity(trade_pnls, initial_capital)
-        original_final = original_equity[-1]
-        original_dd = self._max_drawdown(original_equity)
+        original_equity = initial_capital + np.cumsum(pnl_arr)
+        original_final = float(original_equity[-1])
+        original_dd = self._max_drawdown_np(
+            np.concatenate([[initial_capital], initial_capital + np.cumsum(pnl_arr)])
+        )
 
-        # 模拟
-        final_equities: List[float] = []
-        max_drawdowns: List[float] = []
+        # 批量模拟 — (n_sims, n_trades) 矩阵一次性抽样
+        sample_indices = rng.integers(0, n_trades, size=(n_sims, n_trades))
+        sampled_pnls = pnl_arr[sample_indices]  # (n_sims, n_trades)
 
-        for _ in range(config.num_simulations):
-            # 有放回抽样
-            sampled = [rng.choice(trade_pnls) for _ in range(n_trades)]
-            equity = self._build_equity(sampled, initial_capital)
-            final_equities.append(equity[-1])
-            max_drawdowns.append(self._max_drawdown(equity))
+        # 批量构建权益曲线 — cumsum 沿 axis=1
+        equity_curves = initial_capital + np.cumsum(sampled_pnls, axis=1)  # (n_sims, n_trades)
+        # 在前面补上 initial_capital 列
+        equity_with_init = np.concatenate(
+            [np.full((n_sims, 1), initial_capital), equity_curves],
+            axis=1,
+        )  # (n_sims, n_trades+1)
 
-        final_equities.sort()
-        max_drawdowns.sort()
+        # 批量最终权益
+        final_equities = equity_curves[:, -1]  # (n_sims,)
+
+        # 批量最大回撤 — 向量化 cummax
+        running_max = np.maximum.accumulate(equity_with_init, axis=1)
+        dd_pct = np.where(running_max > 0, (running_max - equity_with_init) / running_max * 100, 0.0)
+        max_drawdowns = np.max(dd_pct, axis=1)  # (n_sims,)
+
+        # 排序
+        sorted_equities = np.sort(final_equities)
+        sorted_drawdowns = np.sort(max_drawdowns)
 
         # 百分位数
         equity_pcts = {}
         dd_pcts = {}
         for level in config.confidence_levels:
-            idx = max(0, min(int(level * len(final_equities)), len(final_equities) - 1))
+            idx = max(0, min(int(level * n_sims), n_sims - 1))
             key = f"{int(level * 100)}%"
-            equity_pcts[key] = round(final_equities[idx], 2)
-            dd_pcts[key] = round(max_drawdowns[idx], 4)
+            equity_pcts[key] = round(float(sorted_equities[idx]), 2)
+            dd_pcts[key] = round(float(sorted_drawdowns[idx]), 4)
 
-        mean_eq = sum(final_equities) / len(final_equities)
-        variance = sum((e - mean_eq) ** 2 for e in final_equities) / len(final_equities)
-        std_eq = math.sqrt(variance)
-        median_idx = len(final_equities) // 2
-        median_eq = final_equities[median_idx]
-        prob_profit = sum(1 for e in final_equities if e > initial_capital) / len(final_equities)
-        prob_beat = sum(1 for e in final_equities if e >= original_final) / len(final_equities)
+        mean_eq = float(np.mean(final_equities))
+        std_eq = float(np.std(final_equities, ddof=0))
+        median_eq = float(np.median(final_equities))
+        prob_profit = float(np.mean(final_equities > initial_capital))
+        prob_beat = float(np.mean(final_equities >= original_final))
 
         return MonteCarloResult(
-            num_simulations=config.num_simulations,
+            num_simulations=n_sims,
             original_final_equity=round(original_final, 2),
             original_max_drawdown=round(original_dd, 4),
             equity_percentiles=equity_pcts,
@@ -127,31 +126,15 @@ class MonteCarloSimulator:
             median_final_equity=round(median_eq, 2),
             prob_profit=round(prob_profit, 4),
             prob_original_beat=round(prob_beat, 4),
-            worst_case_equity=round(final_equities[0], 2),
-            best_case_equity=round(final_equities[-1], 2),
+            worst_case_equity=round(float(sorted_equities[0]), 2),
+            best_case_equity=round(float(sorted_equities[-1]), 2),
         )
 
     @staticmethod
-    def _build_equity(pnls: List[float], initial_capital: float) -> List[float]:
-        """从盈亏序列构建权益曲线"""
-        equity = [initial_capital]
-        current = initial_capital
-        for pnl in pnls:
-            current += pnl
-            equity.append(current)
-        return equity
-
-    @staticmethod
-    def _max_drawdown(equity: List[float]) -> float:
-        """计算最大回撤百分比"""
-        if not equity:
+    def _max_drawdown_np(equity: np.ndarray) -> float:
+        """numpy 向量化最大回撤"""
+        if equity.size == 0:
             return 0.0
-        peak = equity[0]
-        max_dd = 0.0
-        for val in equity:
-            if val > peak:
-                peak = val
-            if peak > 0:
-                dd = (peak - val) / peak * 100
-                max_dd = max(max_dd, dd)
-        return max_dd
+        running_max = np.maximum.accumulate(equity)
+        dd = np.where(running_max > 0, (running_max - equity) / running_max * 100, 0.0)
+        return float(np.max(dd))

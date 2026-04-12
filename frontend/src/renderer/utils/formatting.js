@@ -84,3 +84,107 @@ export const normalizeMonitorSymbol = (symbol) => {
 export const normalizeSymbolList = (symbols = []) => (
   [...new Set((symbols || []).map(normalizeMonitorSymbol).filter(Boolean))]
 );
+
+const DEFAULT_COMPACT_DIGITS = 2;
+const DEFAULT_SCIENTIFIC_DIGITS = 2;
+const MIN_COMPACT_DIGITS = 0;
+const MIN_VISIBLE_CHARS = 1;
+
+const normalizeDigits = (value, fallback) => {
+  const digits = Number(value);
+  if (!Number.isFinite(digits)) {
+    return fallback;
+  }
+  return Math.max(Math.trunc(digits), MIN_COMPACT_DIGITS);
+};
+
+const normalizeMaxChars = (value) => {
+  const maxChars = Number(value);
+  if (!Number.isFinite(maxChars)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(Math.trunc(maxChars), MIN_VISIBLE_CHARS);
+};
+
+const normalizeCompactOptions = (options = {}) => ({
+  digits: normalizeDigits(options.digits, DEFAULT_COMPACT_DIGITS),
+  scientificDigits: normalizeDigits(options.scientificDigits, DEFAULT_SCIENTIFIC_DIGITS),
+  maxChars: normalizeMaxChars(options.maxChars),
+});
+
+const wouldCollapseToZero = (number, digits) => {
+  if (number === 0) {
+    return false;
+  }
+  return Number(number.toFixed(digits)) === 0;
+};
+
+const fitsVisibleWidth = (text, maxChars) => text.length <= maxChars;
+
+const shrinkVisibleWidth = (maxChars, reservedChars) => {
+  if (!Number.isFinite(maxChars)) {
+    return maxChars;
+  }
+  return Math.max(maxChars - reservedChars, MIN_VISIBLE_CHARS);
+};
+
+const formatScientificNumber = (number, digits) => {
+  return number.toExponential(digits).replace(/e([+-])0+(\d+)/, 'e$1$2');
+};
+
+const selectFixedCandidate = (number, digits, maxChars) => {
+  for (let currentDigits = digits; currentDigits >= MIN_COMPACT_DIGITS; currentDigits -= 1) {
+    if (wouldCollapseToZero(number, currentDigits)) {
+      continue;
+    }
+    const candidate = number.toFixed(currentDigits);
+    if (fitsVisibleWidth(candidate, maxChars)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+export const formatCompactNumber = (value, options = {}) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '--';
+  }
+
+  const { digits, maxChars, scientificDigits } = normalizeCompactOptions(options);
+  const fixedCandidate = selectFixedCandidate(number, digits, maxChars);
+  if (fixedCandidate) {
+    return fixedCandidate;
+  }
+  if (number === 0) {
+    return '0';
+  }
+  return formatScientificNumber(number, scientificDigits);
+};
+
+export const formatCompactSignedNumber = (value, options = {}) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '--';
+  }
+
+  const signPrefix = number >= 0 ? '+' : '';
+  const signedNumber = formatCompactNumber(number, {
+    ...options,
+    maxChars: shrinkVisibleWidth(options.maxChars, signPrefix.length),
+  });
+  return `${signPrefix}${signedNumber}`;
+};
+
+export const formatCompactMoney = (value, options = {}) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '--';
+  }
+
+  const compactNumber = formatCompactNumber(number, {
+    ...options,
+    maxChars: shrinkVisibleWidth(options.maxChars, 1),
+  });
+  return `$${compactNumber}`;
+};

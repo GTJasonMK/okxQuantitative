@@ -1,5 +1,7 @@
 import { computed, reactive, watch } from 'vue';
 
+import { deriveOrderBookSnapshot } from './orderBookDerived.mjs';
+
 const ORDERBOOK_WALL_MARKER_LIMIT = 2;
 const DEPTH_CHART_VIEWBOX_WIDTH = 960;
 const DEPTH_CHART_VIEWBOX_HEIGHT = 280;
@@ -16,87 +18,13 @@ const formatSignatureNumber = (value, digits = 4) => {
   return numeric.toFixed(digits);
 };
 
-const getNumericPrecision = (value) => {
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized)) {
-    return 0;
-  }
-
-  const serialized = normalized.toString().toLowerCase();
-  if (serialized.includes('e-')) {
-    const exponent = Number(serialized.split('e-')[1]);
-    return Number.isFinite(exponent) ? exponent : 0;
-  }
-  if (!serialized.includes('.')) {
-    return 0;
-  }
-  return serialized.split('.')[1].length;
-};
-
-const formatSvgNumber = (value) => (
-  Number.isFinite(value) ? value.toFixed(2) : '0.00'
-);
-
-const buildSvgStepLinePath = (points) => {
-  if (!Array.isArray(points) || points.length === 0) {
-    return '';
-  }
-
-  const commands = [`M ${formatSvgNumber(points[0].x)} ${formatSvgNumber(points[0].y)}`];
-  for (let index = 1; index < points.length; index += 1) {
-    const previousPoint = points[index - 1];
-    const point = points[index];
-    commands.push(`L ${formatSvgNumber(point.x)} ${formatSvgNumber(previousPoint.y)}`);
-    commands.push(`L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`);
-  }
-  return commands.join(' ');
-};
-
-const buildSvgStepAreaPath = (points, baselineY) => {
-  if (!Array.isArray(points) || points.length === 0) {
-    return '';
-  }
-
-  const firstPoint = points[0];
-  const lastPoint = points[points.length - 1];
-  const commands = [
-    `M ${formatSvgNumber(firstPoint.x)} ${formatSvgNumber(baselineY)}`,
-    `L ${formatSvgNumber(firstPoint.x)} ${formatSvgNumber(firstPoint.y)}`,
-  ];
-
-  for (let index = 1; index < points.length; index += 1) {
-    const previousPoint = points[index - 1];
-    const point = points[index];
-    commands.push(`L ${formatSvgNumber(point.x)} ${formatSvgNumber(previousPoint.y)}`);
-    commands.push(`L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`);
-  }
-
-  commands.push(`L ${formatSvgNumber(lastPoint.x)} ${formatSvgNumber(baselineY)}`);
-  commands.push('Z');
-  return commands.join(' ');
-};
-
-const getNiceDepthTickInterval = (maxDepth) => {
-  if (!Number.isFinite(maxDepth) || maxDepth <= 0) {
-    return 1;
-  }
-
-  const roughInterval = maxDepth / 3;
-  const magnitude = 10 ** Math.floor(Math.log10(roughInterval));
-  const normalized = roughInterval / magnitude;
-  let step = 1;
-
-  if (normalized <= 1.5) {
-    step = 1;
-  } else if (normalized <= 3) {
-    step = 2;
-  } else if (normalized <= 7) {
-    step = 5;
-  } else {
-    step = 10;
-  }
-
-  return step * magnitude;
+const ORDERBOOK_DEPTH_CHART_SIZE = {
+  width: DEPTH_CHART_VIEWBOX_WIDTH,
+  height: DEPTH_CHART_VIEWBOX_HEIGHT,
+  paddingLeft: DEPTH_CHART_PADDING_LEFT,
+  paddingRight: DEPTH_CHART_PADDING_RIGHT,
+  paddingTop: DEPTH_CHART_PADDING_TOP,
+  paddingBottom: DEPTH_CHART_PADDING_BOTTOM,
 };
 
 const canScrollElement = (element, deltaY) => {
@@ -188,121 +116,29 @@ export const useMarketViewOrderBook = ({
     !orderBookDepthOptions.some(option => option.value === orderBookDepthLimit.value)
   ));
 
-  const activeOrderBookRawAsks = computed(() => (
-    Array.isArray(activeOrderBook.value?.asks) ? activeOrderBook.value.asks : []
-  ));
-  const activeOrderBookRawBids = computed(() => (
-    Array.isArray(activeOrderBook.value?.bids) ? activeOrderBook.value.bids : []
-  ));
-
   const activeOrderBookMidPrice = computed(() => (
     Number(activeOrderBook.value?.mid_price) > 0
       ? Number(activeOrderBook.value.mid_price)
       : Number(activeTicker.value?.last) || 0
   ));
 
-  const activeOrderBookBaseTickSize = computed(() => {
-    const prices = [
-      ...activeOrderBookRawAsks.value.map(level => Number(level?.price) || 0),
-      ...activeOrderBookRawBids.value.map(level => Number(level?.price) || 0),
-    ].filter(price => price > 0).sort((left, right) => left - right);
+  const activeOrderBookDerived = computed(() => deriveOrderBookSnapshot({
+    asks: activeOrderBook.value?.asks,
+    bids: activeOrderBook.value?.bids,
+    bestAsk: Number(activeOrderBook.value?.best_ask) || 0,
+    bestBid: Number(activeOrderBook.value?.best_bid) || 0,
+    midPrice: activeOrderBookMidPrice.value,
+    groupingMultiplier: orderBookGrouping.value,
+    wallMarkerLimit: ORDERBOOK_WALL_MARKER_LIMIT,
+    chartSize: ORDERBOOK_DEPTH_CHART_SIZE,
+    formatPrice,
+    formatTradeSize,
+  }));
 
-    let minDiff = Number.POSITIVE_INFINITY;
-    for (let index = 1; index < prices.length; index += 1) {
-      const diff = prices[index] - prices[index - 1];
-      if (diff > 0 && diff < minDiff) {
-        minDiff = diff;
-      }
-    }
-
-    if (Number.isFinite(minDiff) && minDiff > 0) {
-      return minDiff;
-    }
-
-    const spread = Math.abs((Number(activeOrderBook.value?.best_ask) || 0) - (Number(activeOrderBook.value?.best_bid) || 0));
-    if (spread > 0) {
-      return spread;
-    }
-
-    const latestPrice = activeOrderBookMidPrice.value;
-    if (latestPrice >= 1000) return 0.1;
-    if (latestPrice >= 100) return 0.01;
-    if (latestPrice >= 1) return 0.001;
-    return 0.0001;
-  });
-
-  const activeOrderBookGroupingStep = computed(() => (
-    activeOrderBookBaseTickSize.value * Math.max(1, Number(orderBookGrouping.value) || 1)
-  ));
-
-  const aggregateOrderBookLevels = (levels, side = 'ask') => {
-    const normalizedLevels = Array.isArray(levels) ? levels : [];
-    const groupingStep = activeOrderBookGroupingStep.value;
-    const stepPrecision = Math.min(
-      10,
-      Math.max(
-        getNumericPrecision(groupingStep),
-        getNumericPrecision(activeOrderBookBaseTickSize.value),
-      ),
-    );
-    const step = Number.isFinite(groupingStep) && groupingStep > 0 ? groupingStep : 0;
-
-    const toBucketPrice = (price) => {
-      if (step <= 0) {
-        return price;
-      }
-      const scaled = side === 'bid'
-        ? Math.floor(price / step) * step
-        : Math.ceil(price / step) * step;
-      return Number(scaled.toFixed(stepPrecision));
-    };
-
-    const groupedMap = new Map();
-    normalizedLevels.forEach((level) => {
-      const price = Number(level?.price) || 0;
-      const size = Number(level?.size) || 0;
-      const orderCount = Number(level?.order_count) || 0;
-      if (price <= 0 || size < 0) {
-        return;
-      }
-
-      const bucketPrice = toBucketPrice(price);
-      const existing = groupedMap.get(bucketPrice) || {
-        price: bucketPrice,
-        size: 0,
-        total: 0,
-        order_count: 0,
-      };
-
-      existing.size += size;
-      existing.order_count += orderCount;
-      groupedMap.set(bucketPrice, existing);
-    });
-
-    const groupedLevels = [...groupedMap.values()]
-      .sort((left, right) => (
-        side === 'bid'
-          ? right.price - left.price
-          : left.price - right.price
-      ));
-
-    let cumulativeSize = 0;
-    return groupedLevels.map((level) => {
-      cumulativeSize += level.size;
-      return {
-        ...level,
-        total: cumulativeSize,
-      };
-    });
-  };
-
-  const activeOrderBookBidsGrouped = computed(() => (
-    aggregateOrderBookLevels(activeOrderBookRawBids.value, 'bid')
-  ));
-  const activeOrderBookAsksGrouped = computed(() => (
-    aggregateOrderBookLevels(activeOrderBookRawAsks.value, 'ask')
-  ));
-  const activeOrderBookBidsDisplay = computed(() => activeOrderBookBidsGrouped.value);
+  const activeOrderBookGroupingStep = computed(() => activeOrderBookDerived.value.groupingStep);
+  const activeOrderBookBidsGrouped = computed(() => activeOrderBookDerived.value.bidsGrouped);
+  const activeOrderBookAsksGrouped = computed(() => activeOrderBookDerived.value.asksGrouped);
+  const activeOrderBookBidsDisplay = computed(() => activeOrderBookDerived.value.bidsGrouped);
 
   const activeOrderBookAssetLabel = computed(() => (
     activeBaseCurrency.value
@@ -337,13 +173,7 @@ export const useMarketViewOrderBook = ({
       : '--'
   ));
 
-  const activeOrderBookMaxSize = computed(() => {
-    const sizes = [
-      ...activeOrderBookBidsDisplay.value.map(level => Number(level?.size) || 0),
-      ...activeOrderBookAsksGrouped.value.map(level => Number(level?.size) || 0),
-    ];
-    return Math.max(...sizes, 0);
-  });
+  const activeOrderBookMaxSize = computed(() => activeOrderBookDerived.value.maxSize);
 
   const getOrderBookLevelSizeRatio = (level) => {
     const size = Number(level?.size) || 0;
@@ -354,59 +184,11 @@ export const useMarketViewOrderBook = ({
     return Math.max(4, Math.min(100, (size / maxSize) * 100));
   };
 
-  const activeOrderBookLadderRows = computed(() => {
-    const bids = activeOrderBookBidsDisplay.value;
-    const asks = activeOrderBookAsksGrouped.value;
-    const rowCount = Math.max(bids.length, asks.length, 0);
-    return Array.from({ length: rowCount }, (_, index) => {
-      const bid = bids[index] || null;
-      const ask = asks[index] || null;
-      return {
-        key: `${bid?.price ?? 'na'}-${ask?.price ?? 'na'}-${index}`,
-        bid,
-        ask,
-      };
-    });
-  });
-
-  const selectOrderBookWallLevels = (levels) => {
-    const normalizedLevels = Array.isArray(levels) ? levels : [];
-    if (normalizedLevels.length === 0) {
-      return [];
-    }
-
-    const sortedBySize = [...normalizedLevels].sort((left, right) => (right.size || 0) - (left.size || 0));
-    const sizeValues = sortedBySize
-      .map(level => Number(level?.size) || 0)
-      .filter(size => size > 0)
-      .sort((left, right) => left - right);
-
-    if (sizeValues.length === 0) {
-      return [];
-    }
-
-    const median = sizeValues[Math.floor(sizeValues.length / 2)] || sizeValues[0];
-    const average = sizeValues.reduce((sum, value) => sum + value, 0) / sizeValues.length;
-    const threshold = Math.max(median * 2, average * 1.75);
-    const selected = sortedBySize.filter(level => (Number(level?.size) || 0) >= threshold);
-    const fallback = selected.length > 0 ? selected : sortedBySize.slice(0, ORDERBOOK_WALL_MARKER_LIMIT);
-    return fallback
-      .slice(0, ORDERBOOK_WALL_MARKER_LIMIT)
-      .sort((left, right) => left.price - right.price);
-  };
-
-  const activeOrderBookBidWalls = computed(() => (
-    selectOrderBookWallLevels(activeOrderBookBidsGrouped.value)
-  ));
-  const activeOrderBookAskWalls = computed(() => (
-    selectOrderBookWallLevels(activeOrderBookAsksGrouped.value)
-  ));
-  const activeOrderBookBidWallSet = computed(() => new Set(
-    activeOrderBookBidWalls.value.map(level => String(level.price)),
-  ));
-  const activeOrderBookAskWallSet = computed(() => new Set(
-    activeOrderBookAskWalls.value.map(level => String(level.price)),
-  ));
+  const activeOrderBookLadderRows = computed(() => activeOrderBookDerived.value.ladderRows);
+  const activeOrderBookBidWalls = computed(() => activeOrderBookDerived.value.bidWalls);
+  const activeOrderBookAskWalls = computed(() => activeOrderBookDerived.value.askWalls);
+  const activeOrderBookBidWallSet = computed(() => activeOrderBookDerived.value.bidWallSet);
+  const activeOrderBookAskWallSet = computed(() => activeOrderBookDerived.value.askWallSet);
 
   const isOrderBookWall = (level, side = 'bid') => {
     const priceKey = String(level?.price ?? '');
@@ -418,162 +200,12 @@ export const useMarketViewOrderBook = ({
       : activeOrderBookAskWallSet.value.has(priceKey);
   };
 
-  const activeOrderBookLevelCount = computed(() => (
-    activeOrderBookAsksGrouped.value.length + activeOrderBookBidsGrouped.value.length
-  ));
-
-  const activeOrderBookMaxTotal = computed(() => {
-    const askTotal = activeOrderBookAsksGrouped.value[activeOrderBookAsksGrouped.value.length - 1]?.total || 0;
-    const bidTotal = activeOrderBookBidsGrouped.value[activeOrderBookBidsGrouped.value.length - 1]?.total || 0;
-    const fallbackAsk = activeOrderBookAsksGrouped.value[activeOrderBookAsksGrouped.value.length - 1]?.total || 0;
-    const fallbackBid = activeOrderBookBidsDisplay.value[activeOrderBookBidsDisplay.value.length - 1]?.total || 0;
-    return Math.max(askTotal, bidTotal, fallbackAsk, fallbackBid, 0);
-  });
-
-  const activeDepthChartBids = computed(() => (
-    activeOrderBookBidsGrouped.value
-      .map(level => ({
-        price: Number(level?.price) || 0,
-        size: Number(level?.size) || 0,
-        total: Number(level?.total) || 0,
-      }))
-      .filter(level => level.price > 0 && level.total >= 0)
-      .sort((left, right) => left.price - right.price)
-  ));
-  const activeDepthChartAsks = computed(() => (
-    activeOrderBookAsksGrouped.value
-      .map(level => ({
-        price: Number(level?.price) || 0,
-        size: Number(level?.size) || 0,
-        total: Number(level?.total) || 0,
-      }))
-      .filter(level => level.price > 0 && level.total >= 0)
-      .sort((left, right) => left.price - right.price)
-  ));
-
+  const activeOrderBookLevelCount = computed(() => activeOrderBookDerived.value.levelCount);
   const hideDepthChartHover = () => {
     depthChartHover.visible = false;
   };
 
-  const activeOrderBookDepthChart = computed(() => {
-    const bids = activeDepthChartBids.value;
-    const asks = activeDepthChartAsks.value;
-    if (bids.length === 0 && asks.length === 0) {
-      return null;
-    }
-
-    const latestPrice = activeOrderBookMidPrice.value > 0 ? activeOrderBookMidPrice.value : 0;
-    const bestBid = Number(activeOrderBook.value?.best_bid) || 0;
-    const bestAsk = Number(activeOrderBook.value?.best_ask) || 0;
-    const priceCandidates = [
-      ...bids.map(level => level.price),
-      ...asks.map(level => level.price),
-    ];
-    if (latestPrice > 0) {
-      priceCandidates.push(latestPrice);
-    }
-
-    const rawMinPrice = Math.min(...priceCandidates);
-    const rawMaxPrice = Math.max(...priceCandidates);
-    const centerPrice = latestPrice > 0
-      ? latestPrice
-      : (
-        bestBid > 0 && bestAsk > 0
-          ? (bestBid + bestAsk) / 2
-          : (rawMinPrice + rawMaxPrice) / 2
-      );
-    const bestSpread = Math.abs(bestAsk - bestBid);
-    const basePriceStep = Math.max(
-      Number(activeOrderBookGroupingStep.value) || 0,
-      Number(activeOrderBookBaseTickSize.value) || 0,
-      bestSpread,
-      centerPrice > 0 ? centerPrice * 0.000001 : 0,
-      0.00000001,
-    );
-    const visibleLevelCount = Math.max(bids.length, asks.length, 6);
-    const fallbackSpan = Math.max(
-      basePriceStep * visibleLevelCount * 2,
-      bestSpread * 24,
-      centerPrice > 0 ? centerPrice * 0.00008 : 1,
-      1e-6,
-    );
-    const radius = Math.max(
-      rawMaxPrice - centerPrice,
-      centerPrice - rawMinPrice,
-      fallbackSpan / 2,
-      1e-6,
-    );
-    const minPrice = centerPrice - radius;
-    const maxPrice = centerPrice + radius;
-    const priceSpan = Math.max(maxPrice - minPrice, 1e-6);
-    const maxDepth = Math.max(
-      activeOrderBookMaxTotal.value,
-      ...bids.map(level => level.total),
-      ...asks.map(level => level.total),
-      1,
-    );
-
-    const chartLeft = DEPTH_CHART_PADDING_LEFT;
-    const chartTop = DEPTH_CHART_PADDING_TOP;
-    const chartWidth = DEPTH_CHART_VIEWBOX_WIDTH - DEPTH_CHART_PADDING_LEFT - DEPTH_CHART_PADDING_RIGHT;
-    const chartHeight = DEPTH_CHART_VIEWBOX_HEIGHT - DEPTH_CHART_PADDING_TOP - DEPTH_CHART_PADDING_BOTTOM;
-    const baselineY = chartTop + chartHeight;
-    const toX = (price) => chartLeft + ((price - minPrice) / priceSpan) * chartWidth;
-    const toY = (total) => chartTop + chartHeight - (Math.max(total, 0) / maxDepth) * chartHeight;
-    const bidPoints = bids.map(level => ({
-      x: toX(level.price),
-      y: toY(level.total),
-      side: 'bid',
-      price: level.price,
-      size: level.size,
-      total: level.total,
-    }));
-    const askPoints = asks.map(level => ({
-      x: toX(level.price),
-      y: toY(level.total),
-      side: 'ask',
-      price: level.price,
-      size: level.size,
-      total: level.total,
-    }));
-    const centerX = toX(Number.isFinite(centerPrice) && centerPrice > 0 ? centerPrice : minPrice);
-    const bidWallPrices = new Set(activeOrderBookBidWalls.value.map(level => String(level.price)));
-    const askWallPrices = new Set(activeOrderBookAskWalls.value.map(level => String(level.price)));
-    const bidWallPoints = bidPoints.filter(point => bidWallPrices.has(String(point.price)));
-    const askWallPoints = askPoints.filter(point => askWallPrices.has(String(point.price)));
-    const tickInterval = getNiceDepthTickInterval(maxDepth);
-    const yTicks = [];
-    for (let value = tickInterval; value <= maxDepth + 1e-9; value += tickInterval) {
-      yTicks.push({
-        value,
-        y: toY(value),
-        label: formatTradeSize(value),
-      });
-    }
-
-    return {
-      viewBox: `0 0 ${DEPTH_CHART_VIEWBOX_WIDTH} ${DEPTH_CHART_VIEWBOX_HEIGHT}`,
-      bidLinePath: buildSvgStepLinePath(bidPoints),
-      bidAreaPath: buildSvgStepAreaPath(bidPoints, baselineY),
-      askLinePath: buildSvgStepLinePath(askPoints),
-      askAreaPath: buildSvgStepAreaPath(askPoints, baselineY),
-      centerX,
-      baselineY,
-      topY: chartTop,
-      maxDepthLabel: formatTradeSize(maxDepth),
-      leftPriceLabel: formatPrice(minPrice),
-      centerPriceLabel: formatPrice(centerPrice),
-      rightPriceLabel: formatPrice(maxPrice),
-      bidDepthLabel: formatTradeSize(bids[bids.length - 1]?.total || 0),
-      askDepthLabel: formatTradeSize(asks[asks.length - 1]?.total || 0),
-      bestBidX: bestBid > 0 ? toX(bestBid) : centerX,
-      bestAskX: bestAsk > 0 ? toX(bestAsk) : centerX,
-      hoverPoints: [...bidPoints, ...askPoints],
-      bidWallPoints,
-      askWallPoints,
-      yTicks,
-    };
-  });
+  const activeOrderBookDepthChart = computed(() => activeOrderBookDerived.value.depthChart);
 
   const activePrimaryBidWall = computed(() => activeOrderBookBidWalls.value[0] || null);
   const activePrimaryAskWall = computed(() => activeOrderBookAskWalls.value[0] || null);

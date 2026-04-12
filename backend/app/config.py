@@ -151,6 +151,22 @@ class AIAssistantConfig:
         return self.enabled and bool(self.base_url.strip()) and bool(self.api_key.strip()) and bool(self.model.strip())
 
 
+@dataclass(frozen=True)
+class TrendResearchConfig:
+    """永续趋势研究配置"""
+    enabled: bool = False
+    whitelist: tuple[str, ...] = ()
+    feature_bar_seconds: int = 1
+    state_sync_seconds: int = 30
+    book_channel: str = "books5"
+
+
+def _parse_csv_symbols(raw: str) -> tuple[str, ...]:
+    """解析逗号分隔的交易对白名单，去重并统一大写。"""
+    items = [item.strip().upper() for item in str(raw or "").split(",") if item.strip()]
+    return tuple(dict.fromkeys(items))
+
+
 @dataclass
 class AppConfig:
     """应用总配置"""
@@ -160,6 +176,7 @@ class AppConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     strategy: StrategyPluginConfig = field(default_factory=StrategyPluginConfig)
     ai_assistant: AIAssistantConfig = field(default_factory=AIAssistantConfig)
+    trend_research: TrendResearchConfig = field(default_factory=TrendResearchConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -252,6 +269,13 @@ class AppConfig:
                 max_context_messages=max(2, int(os.getenv("AI_ASSISTANT_MAX_CONTEXT_MESSAGES", "12"))),
                 max_context_candles=max(20, int(os.getenv("AI_ASSISTANT_MAX_CONTEXT_CANDLES", "80"))),
                 system_prompt=os.getenv("AI_ASSISTANT_SYSTEM_PROMPT", "").strip() or AIAssistantConfig().system_prompt,
+            ),
+            trend_research=TrendResearchConfig(
+                enabled=os.getenv("TREND_RESEARCH_ENABLED", "false").lower() == "true",
+                whitelist=_parse_csv_symbols(os.getenv("TREND_RESEARCH_WHITELIST", "")),
+                feature_bar_seconds=max(int(os.getenv("TREND_RESEARCH_FEATURE_BAR_SECONDS", "1")), 1),
+                state_sync_seconds=max(int(os.getenv("TREND_RESEARCH_STATE_SYNC_SECONDS", "30")), 5),
+                book_channel=os.getenv("TREND_RESEARCH_BOOK_CHANNEL", "books5").strip() or "books5",
             ),
         )
 

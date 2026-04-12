@@ -1,8 +1,7 @@
 /* 全局样式 - OKX 量化交易系统 */
 /* 设计系统: Bitcoin DeFi — True Void + Bitcoin Orange + Digital Gold */
 
-/* Google Fonts — Space Grotesk (标题) + Inter (正文) + JetBrains Mono (数据) */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Google Fonts — 在 index.html 中异步加载，此处仅声明 fallback */
 
 :root {
   /* ===== 背景 — True Void ===== */

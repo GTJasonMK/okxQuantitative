@@ -8,9 +8,11 @@ from .storage_live_orders import StorageLiveOrderMixin
 from .storage_market_streams import StorageMarketStreamsMixin
 from .storage_risk import StorageRiskMixin
 from .storage_scanner import StorageScannerMixin
+from .storage_trend_research import StorageTrendResearchMixin
 
 
 class DataStorage(
+    StorageTrendResearchMixin,
     StorageMarketStreamsMixin,
     StorageCoreMixin,
     StorageFillMixin,

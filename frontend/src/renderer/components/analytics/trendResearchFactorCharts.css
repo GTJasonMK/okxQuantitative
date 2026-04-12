@@ -1,0 +1,73 @@
+.trend-factor-chart-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.trend-factor-chart-panel {
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.2);
+  overflow: hidden;
+}
+
+.trend-factor-chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.trend-factor-chart-header h5,
+.trend-factor-chart-header p {
+  margin: 0;
+}
+
+.trend-factor-chart-header h5 {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.trend-factor-chart-header p,
+.trend-factor-chart-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.trend-factor-chart-header p {
+  margin-top: 3px;
+  max-width: 540px;
+  line-height: 1.45;
+}
+
+.trend-factor-chart-host-wrap {
+  position: relative;
+}
+
+.trend-factor-chart-host {
+  width: 100%;
+  height: 236px;
+}
+
+.trend-factor-hover-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  background: rgba(247, 147, 26, 0.48);
+}
+
+@media (max-width: 760px) {
+  .trend-factor-chart-header {
+    flex-direction: column;
+  }
+
+  .trend-factor-chart-host {
+    height: 220px;
+  }
+}

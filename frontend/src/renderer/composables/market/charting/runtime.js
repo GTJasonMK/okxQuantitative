@@ -36,7 +36,6 @@ export function createMarketViewChartRuntime(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -372,6 +371,11 @@ export function createMarketViewChartRuntime(ctx) {
       return false;
     }
 
+    // LWC 实例没有 setOption 方法，跳过 ECharts 专用的 option 推送
+    if (typeof chart.setOption !== 'function') {
+      return false;
+    }
+
     if (!isChartInMainProcess(chart)) {
       chart.setOption(option, setOptionOptions);
       return true;
@@ -434,6 +438,11 @@ export function createMarketViewChartRuntime(ctx) {
   applyChartResize = (symbol, chart, resizeOptions) => {
     const normalizedSymbol = normalizeMonitorSymbol(symbol);
     if (!normalizedSymbol || !chart) {
+      return false;
+    }
+
+    // LWC 实例通过全局 ResizeObserver 自动管理，无需手动 resize
+    if (typeof chart.setOption !== 'function') {
       return false;
     }
 
@@ -1007,7 +1016,11 @@ export function createMarketViewChartRuntime(ctx) {
 
 
   getChartDataZoomWindow = (chart) => {
-    const option = chart?.getOption?.();
+    // LWC 实例没有 getOption/dataZoom，直接返回 null（LWC 原生管理视口）
+    if (!chart || typeof chart.getOption !== 'function') {
+      return null;
+    }
+    const option = chart.getOption();
     const dataZoomList = Array.isArray(option?.dataZoom) ? option.dataZoom : [];
     const insideZoom = dataZoomList.find(item => item?.id === 'inside') || dataZoomList[0];
     const sliderZoom = dataZoomList.find(item => item?.id === 'slider');
@@ -1060,8 +1073,23 @@ export function createMarketViewChartRuntime(ctx) {
     clearDeferredChartResizes(symbol);
     clearDeferredChartHideTip(symbol);
     delete chartRenderCaches[symbol];
-    if (chartInstances[symbol]) {
-      chartInstances[symbol].dispose();
+
+    // 优先通过 LWC 管理器销毁（内部会调用 chart.remove）
+    const { lwcManagers } = ctx;
+    const manager = lwcManagers?.get(symbol);
+    if (manager) {
+      manager.dispose();
+      lwcManagers.delete(symbol);
+      delete chartInstances[symbol];
+      return;
+    }
+
+    // Fallback: 直接销毁 chartInstances 中的 ECharts 实例
+    const instance = chartInstances[symbol];
+    if (instance) {
+      if (typeof instance.dispose === 'function') {
+        try { instance.dispose(); } catch (_) {}
+      }
       delete chartInstances[symbol];
     }
   };

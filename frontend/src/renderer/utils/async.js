@@ -42,6 +42,71 @@ export const debounce = (fn, delay) => {
 };
 
 /**
+ * 带尾触发的节流函数。
+ * 首次调用立即执行；冷却窗口内的重复调用会合并，并在窗口结束后用最新参数再执行一次。
+ * 适合持续实时推送场景，避免 debounce 在高频流下长期不触发。
+ *
+ * @param {Function} fn 目标函数
+ * @param {number} delay 最小间隔（毫秒）
+ * @returns {{ run: Function, cancel: Function }} 带 cancel 的节流对象
+ */
+export const createTrailingThrottle = (fn, delay) => {
+  let timer = null;
+  let lastInvokeAt = 0;
+  let pendingArgs = null;
+
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const invoke = (args) => {
+    pendingArgs = null;
+    lastInvokeAt = Date.now();
+    fn(...args);
+  };
+
+  const schedulePending = () => {
+    clearTimer();
+    if (!pendingArgs) {
+      return;
+    }
+    const remaining = Math.max(delay - (Date.now() - lastInvokeAt), 0);
+    timer = setTimeout(() => {
+      timer = null;
+      if (!pendingArgs) {
+        return;
+      }
+      const nextArgs = pendingArgs;
+      invoke(nextArgs);
+      if (pendingArgs) {
+        schedulePending();
+      }
+    }, remaining);
+  };
+
+  const run = (...args) => {
+    pendingArgs = args;
+    const elapsed = Date.now() - lastInvokeAt;
+    if (lastInvokeAt === 0 || elapsed >= delay) {
+      clearTimer();
+      invoke(args);
+      return;
+    }
+    schedulePending();
+  };
+
+  const cancel = () => {
+    pendingArgs = null;
+    clearTimer();
+  };
+
+  return { run, cancel };
+};
+
+/**
  * 创建一个"最新请求胜出"的请求包装器。
  * 快速切换参数时，旧请求的响应会被丢弃，只有最后一次调用的结果被采纳。
  * 同时支持通过 AbortController 取消旧的 in-flight 请求。

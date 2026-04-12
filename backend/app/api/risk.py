@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/risk", tags=["risk"])
 
 def _get_storage():
     ctx = get_app_context()
-    return ctx.storage
+    return ctx.storage()
 
 
 def _get_equities_and_returns(storage, mode: str, days: int):

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`backend/` holds the FastAPI service. Main areas are `backend/app/api`, `app/core`, `app/strategies`, `app/live`, `app/backtest`, `app/agent`, and `app/assistant_runtime`. Tests live in `backend/tests/`; `backend/test_data.py` is a manual script, not part of pytest. `frontend/` contains the Electron + Vue 3 client: `src/main` for Electron, `src/preload` for the bridge, and `src/renderer` for views, components, stores, services, composables, and assets. Use `config/` for env files, `data/` for local SQLite/runtime data, `logs/` for logs, and `tools/` for utilities.
+`backend/` contains the FastAPI service. Core areas include `backend/app/api`, `app/core`, `app/strategies`, `app/live`, `app/backtest`, `app/agent`, and `app/assistant_runtime`. Tests live in `backend/tests/`; `backend/test_data.py` is a manual script, not part of pytest. `frontend/` contains the Electron + Vue 3 client: `src/main` for Electron, `src/preload` for the bridge, and `src/renderer` for views, components, stores, services, composables, and assets. Use `config/` for env files, `data/` for local SQLite/runtime data, `logs/` for logs, and `tools/` for utilities.
 
 ## Build, Test, and Development Commands
 - `install.bat`: install backend and frontend dependencies on Windows.

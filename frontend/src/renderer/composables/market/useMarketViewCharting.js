@@ -1,5 +1,5 @@
 import { shallowReactive } from 'vue';
-import * as echarts from 'echarts';
+import { createKlineChartManager } from './charting/lwc-kline';
 
 import { createMarketViewChartViewport } from './charting/viewport';
 import { createMarketViewChartAnnotationState } from './charting/annotations-state';
@@ -39,6 +39,8 @@ export function useMarketViewCharting(deps) {
   const chartAnnotationEditSessions = new Map();
   const chartAnnotationSuppressClickUntil = new Map();
   const chartRenderCaches = {};
+  // LWC K 线图管理器（按 symbol 存储）
+  const lwcManagers = new Map();
   const CHART_ANNOTATION_REFRESH_DELAY = 72;
   const CHART_ANNOTATION_UPDATE_FRAME_MS = 16;
   const CHART_REALTIME_ANIMATION_DURATION = 180;
@@ -57,7 +59,8 @@ export function useMarketViewCharting(deps) {
 
   const ctx = {
     ...deps,
-    echarts,
+    lwcManagers,
+    createKlineChartManager,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -112,7 +115,15 @@ export function useMarketViewCharting(deps) {
   Object.assign(ctx, createMarketViewChartRenderingSupport(ctx));
   Object.assign(ctx, createMarketViewChartRendering(ctx));
 
+  // 标注系统桥接：转发到 LWC AnnotationManager
+  const getLwcAnnotationManager = (symbol) => {
+    const manager = lwcManagers.get(symbol);
+    return manager?.annotations || null;
+  };
+
   return {
+    lwcManagers,
+    getLwcAnnotationManager,
     chartViewportStates: ctx.chartViewportStates,
     getChartViewportStateKey: ctx.getChartViewportStateKey,
     buildDefaultChartViewportState: ctx.buildDefaultChartViewportState,

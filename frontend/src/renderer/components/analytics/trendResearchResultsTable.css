@@ -1,0 +1,162 @@
+.trend-results-wrapper {
+  overflow-x: hidden;
+}
+
+.trend-results-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.trend-results-table th:nth-child(1) {
+  width: 24%;
+}
+
+.trend-results-table th:nth-child(2) {
+  width: 24%;
+}
+
+.trend-results-table th:nth-child(3) {
+  width: 24%;
+}
+
+.trend-results-table th:nth-child(4) {
+  width: 14%;
+}
+
+.trend-results-table th:nth-child(5) {
+  width: 14%;
+}
+
+.trend-results-table th:nth-child(4),
+.trend-results-table th:nth-child(5),
+.trend-results-table td:nth-child(4),
+.trend-results-table td:nth-child(5) {
+  text-align: right;
+}
+
+.trend-results-table tbody tr {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.trend-results-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.trend-results-table tbody tr.is-active {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.trend-inst-cell,
+.trend-score-cell,
+.trend-probability-cell,
+.trend-confidence-cell,
+.trend-quality-cell {
+  vertical-align: middle;
+}
+
+.trend-inst-primary,
+.trend-score-value,
+.trend-confidence-cell,
+.trend-probability-metric strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-inst-primary {
+  display: block;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.trend-score-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.trend-score-value {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.trend-state-badge,
+.trend-quality-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.trend-state-badge.tone-up {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.26);
+}
+
+.trend-state-badge.tone-down {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.24);
+}
+
+.trend-state-badge.tone-neutral {
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.trend-probability-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.trend-probability-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trend-probability-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.trend-confidence-cell {
+  font-weight: 600;
+}
+
+.trend-quality-badge.tone-ok {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.26);
+}
+
+.trend-quality-badge.tone-partial {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.26);
+}
+
+@media (max-width: 900px) {
+  .trend-results-table {
+    table-layout: auto;
+  }
+
+  .trend-results-table th,
+  .trend-results-table td {
+    padding: 10px 8px;
+  }
+
+  .trend-score-cell {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

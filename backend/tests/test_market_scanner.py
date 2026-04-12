@@ -231,7 +231,8 @@ class TestScannerAPI:
         test_storage.save_candles("TEST-USDT", "1H", candles, inst_type="SPOT")
 
         class FakeCtx:
-            storage = test_storage
+            def storage(self):
+                return test_storage
 
         monkeypatch.setattr("app.api.scanner.get_app_context", lambda: FakeCtx())
         self.client = TestClient(app)

@@ -202,7 +202,8 @@ class TestJournalAPI:
 
         # 模拟 AppContext
         class FakeCtx:
-            storage = test_storage
+            def storage(self):
+                return test_storage
 
         monkeypatch.setattr(
             "app.api.journal.get_app_context",

@@ -29,15 +29,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-
-import BacktestView from './BacktestView.vue';
-import StrategyView from './StrategyView.vue';
 
 defineOptions({
   name: 'StrategyCenterView',
 });
+
+const BacktestView = defineAsyncComponent(() => import('./BacktestView.vue'));
+const StrategyView = defineAsyncComponent(() => import('./StrategyView.vue'));
 
 const route = useRoute();
 const router = useRouter();

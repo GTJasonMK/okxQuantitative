@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .config import config, DATA_DIR, CONFIG_DIR
-from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner
+from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner, system_monitor, trend_research
 from .core.app_context import get_app_context
 from .core.assistant_patrol import get_assistant_patrol
 from .core.data_guardian import get_data_guardian
@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
     # 设置全局 asyncio 异常处理器
     loop = asyncio.get_event_loop()
     loop.set_exception_handler(_handle_task_exception)
+    ctx = get_app_context()
 
     # 启动时配置验证
     warnings, errors = _validate_config()
@@ -136,15 +137,14 @@ async def lifespan(app: FastAPI):
     print("-" * 50)
     print("WebSocket 服务:")
     try:
-        from .core.app_context import get_app_context
-        await get_app_context().start_ws()
+        await ctx.start_ws()
         print("  [+] OKX WebSocket 连接已建立")
     except Exception as e:
         print(f"  [!] WebSocket 启动失败: {e}")
 
     print("-" * 50)
     print("数据守护器:")
-    guardian = get_data_guardian(get_app_context())
+    guardian = get_data_guardian(ctx)
     try:
         await guardian.start()
         print("  [+] 本地数据守护器已启动")
@@ -153,12 +153,24 @@ async def lifespan(app: FastAPI):
 
     print("-" * 50)
     print("主动巡检:")
-    patrol = get_assistant_patrol(get_app_context())
+    patrol = get_assistant_patrol(ctx)
     try:
         await patrol.start()
         print("  [+] 机会巡检服务已启动")
     except Exception as e:
         print(f"  [!] 机会巡检服务启动失败: {e}")
+
+    print("-" * 50)
+    print("趋势研究:")
+    trend_research = ctx.trend_research()
+    try:
+        await trend_research.start()
+        if ctx.cfg.trend_research.enabled and ctx.cfg.trend_research.whitelist:
+            print(f"  [+] 趋势研究已启动: {len(ctx.cfg.trend_research.whitelist)} 个永续")
+        else:
+            print("  [+] 趋势研究未启用或白名单为空")
+    except Exception as e:
+        print(f"  [!] 趋势研究启动失败: {e}")
 
     # 显示配置警告
     if warnings:
@@ -192,8 +204,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"关闭数据守护器失败: {e}")
     try:
-        from .core.app_context import get_app_context
-        await get_app_context().stop_ws()
+        await trend_research.stop()
+        print("趋势研究已关闭")
+    except Exception as e:
+        print(f"关闭趋势研究失败: {e}")
+    try:
+        await ctx.stop_ws()
         print("WebSocket 连接已关闭")
     except Exception as e:
         print(f"关闭 WebSocket 失败: {e}")
@@ -259,6 +275,8 @@ app.include_router(agent.router, prefix="/api")  # Agent 查询/分析路由 /ap
 app.include_router(journal.router)  # 交易日志路由 /api/journal 前缀
 app.include_router(risk.router)  # 风险指标路由 /api/risk 前缀
 app.include_router(scanner.router)  # 市场扫描路由 /api/scanner 前缀
+app.include_router(system_monitor.router)
+app.include_router(trend_research.router)
 
 
 # 根路由
@@ -381,12 +399,13 @@ async def system_status():
     rate_limit_info = {
         "total_calls": 0,
         "calls_per_minute": 0,
-        "rate_limit": 3000,
-        "remaining_quota": 3000,
+        "rate_limit": None,
+        "remaining_quota": None,
         "usage_percent": 0,
+        "mode": "official_rules",
     }
     try:
-        rate_limit_info = ctx.rate_limiter().get_stats()
+        rate_limit_info = ctx.okx_outbound_governor().legacy_rate_limit_stats()
     except Exception:
         pass
 

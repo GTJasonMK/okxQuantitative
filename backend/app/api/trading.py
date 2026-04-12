@@ -148,6 +148,31 @@ def validate_mode(mode: str) -> str:
     return normalized
 
 
+async def _run_okx_query(action_name: str, operation):
+    """在线程池中执行 OKX 查询，并把上游失败统一暴露为 503。"""
+    try:
+        return await asyncio.to_thread(operation)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"{action_name}失败: {e}") from e
+
+
+def _format_balance_error_detail(balance: dict) -> str:
+    error = str(balance.get("error") or "获取余额失败")
+    code = balance.get("code")
+    if code in (None, "", 0, "0"):
+        return error
+    return f"{error} (code={code})"
+
+
+async def _run_okx_balance_query(operation):
+    balance = await _run_okx_query("获取余额", operation)
+    if not isinstance(balance, dict):
+        raise HTTPException(status_code=503, detail="获取余额失败: 返回数据格式异常")
+    if "error" in balance:
+        raise HTTPException(status_code=503, detail=_format_balance_error_detail(balance))
+    return balance
+
+
 # ========== API 端点 ==========
 
 @router.get("/account")
@@ -164,14 +189,7 @@ async def get_account_balance(mode: str = Query(default="simulated", description
     if not account.is_available:
         raise HTTPException(status_code=503, detail="账户 API 未初始化，请检查 API 密钥配置")
 
-    try:
-        balance = await asyncio.to_thread(account.get_balance)
-    except Exception as e:
-        print(f"[Trading API] get_balance 异常: {e}")
-        raise HTTPException(status_code=500, detail=f"获取余额异常: {str(e)}")
-
-    if "error" in balance:
-        raise HTTPException(status_code=500, detail=balance["error"])
+    balance = await _run_okx_balance_query(account.get_balance)
 
     # 解析余额数据
     total_equity = balance.get("totalEq", "0")
@@ -218,7 +236,10 @@ async def get_positions(
     if not account.is_available:
         raise HTTPException(status_code=503, detail="账户 API 未初始化")
 
-    positions = await asyncio.to_thread(account.get_positions, inst_type, inst_id)
+    positions = await _run_okx_query(
+        "获取持仓",
+        lambda: account.get_positions(inst_type, inst_id),
+    )
 
     # 格式化持仓数据
     formatted = []
@@ -255,17 +276,13 @@ async def get_spot_holdings(mode: str = Query(default="simulated", description="
     fetcher = get_ctx().fetcher()
 
     try:
-        # 使用 asyncio.to_thread 并行执行同步 API 调用
         balance, all_tickers = await asyncio.gather(
-            asyncio.to_thread(account.get_balance),
+            _run_okx_balance_query(account.get_balance),
             asyncio.to_thread(fetcher.get_tickers_cached, "SPOT")
         )
     except Exception as e:
         print(f"[Trading API] get_spot_holdings - 并行获取数据异常: {e}")
-        raise HTTPException(status_code=500, detail=f"获取数据异常: {str(e)}")
-
-    if "error" in balance:
-        raise HTTPException(status_code=500, detail=balance["error"])
+        raise HTTPException(status_code=503, detail=f"获取数据异常: {str(e)}") from e
 
     details = balance.get("details", [])
 
@@ -298,14 +315,7 @@ async def get_holdings_base(mode: str = Query(default="simulated", description="
     if not account.is_available:
         raise HTTPException(status_code=503, detail="账户 API 未初始化")
 
-    # 只获取账户余额（无需行情）
-    try:
-        balance = await asyncio.to_thread(account.get_balance)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取余额异常: {str(e)}")
-
-    if "error" in balance:
-        raise HTTPException(status_code=500, detail=balance["error"])
+    balance = await _run_okx_balance_query(account.get_balance)
 
     details = balance.get("details", [])
 
@@ -481,7 +491,10 @@ async def get_pending_orders(
     if not trader.is_available:
         raise HTTPException(status_code=503, detail="交易 API 未初始化")
 
-    orders = await asyncio.to_thread(trader.get_pending_orders, inst_type, inst_id)
+    orders = await _run_okx_query(
+        "获取当前委托",
+        lambda: trader.get_pending_orders(inst_type, inst_id),
+    )
 
     # 格式化订单数据
     formatted = []
@@ -525,7 +538,10 @@ async def get_order_history(
     if not trader.is_available:
         raise HTTPException(status_code=503, detail="交易 API 未初始化")
 
-    orders = await asyncio.to_thread(trader.get_order_history, inst_type, inst_id, limit)
+    orders = await _run_okx_query(
+        "获取历史订单",
+        lambda: trader.get_order_history(inst_type, inst_id, limit),
+    )
 
     # 格式化订单数据
     formatted = []
@@ -571,7 +587,10 @@ async def get_fills(
     if not trader.is_available:
         raise HTTPException(status_code=503, detail="交易 API 未初始化")
 
-    fills = await asyncio.to_thread(trader.get_fills, inst_type, inst_id, limit)
+    fills = await _run_okx_query(
+        "获取成交记录",
+        lambda: trader.get_fills(inst_type, inst_id, limit),
+    )
 
     # 格式化成交数据
     formatted = []
@@ -1198,7 +1217,10 @@ async def get_contract_positions(
     if not account.is_available:
         raise HTTPException(status_code=503, detail="账户 API 未初始化")
 
-    positions = await asyncio.to_thread(account.get_contract_positions, inst_type, inst_id)
+    positions = await _run_okx_query(
+        "获取合约持仓",
+        lambda: account.get_contract_positions(inst_type, inst_id),
+    )
 
     # 格式化持仓数据
     formatted = []

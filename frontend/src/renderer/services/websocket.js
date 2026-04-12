@@ -41,7 +41,10 @@ class MarketWebSocket {
       fill: new Set(),     // Set<callback>
       alert: new Set(),    // Set<callback>
       assistantPatrol: new Set(), // Set<callback>
+      trendResearch: new Set(), // Set<callback>
+      trendDiagnostics: new Set(), // Set<callback>
     }
+    this.trendDiagnosticsConfig = null
   }
 
   /**
@@ -171,6 +174,9 @@ class MarketWebSocket {
     this.listeners.fill.clear()
     this.listeners.alert.clear()
     this.listeners.assistantPatrol.clear()
+    this.listeners.trendResearch.clear()
+    this.listeners.trendDiagnostics.clear()
+    this.trendDiagnosticsConfig = null
   }
 
   /**
@@ -512,6 +518,61 @@ class MarketWebSocket {
     }
   }
 
+  subscribeTrendResearch(callback) {
+    this.listeners.trendResearch.add(callback)
+
+    if (!this.subscribedChannels.has('trend_research')) {
+      this.subscribedChannels.add('trend_research')
+      if (this.isConnected) {
+        this._sendSubscribe(['trend_research'])
+      }
+    }
+  }
+
+  subscribeTrendDiagnostics(config = {}, callback) {
+    this.listeners.trendDiagnostics.add(callback)
+    this.trendDiagnosticsConfig = {
+      instId: config.instId || '',
+      timelineLimit: config.timelineLimit || 40,
+    }
+
+    if (!this.subscribedChannels.has('trend_diagnostics')) {
+      this.subscribedChannels.add('trend_diagnostics')
+    }
+
+    if (this.isConnected) {
+      this._sendSubscribe(['trend_diagnostics'], [], {
+        inst_id: this.trendDiagnosticsConfig.instId,
+        timeline_limit: this.trendDiagnosticsConfig.timelineLimit,
+      })
+    }
+  }
+
+  unsubscribeTrendResearch(callback) {
+    this.listeners.trendResearch.delete(callback)
+
+    if (this.listeners.trendResearch.size === 0) {
+      this.subscribedChannels.delete('trend_research')
+      if (this.isConnected) {
+        this._sendUnsubscribe(['trend_research'])
+      }
+    }
+  }
+
+  unsubscribeTrendDiagnostics(callback) {
+    this.listeners.trendDiagnostics.delete(callback)
+
+    if (this.listeners.trendDiagnostics.size === 0) {
+      this.subscribedChannels.delete('trend_diagnostics')
+      if (this.isConnected) {
+        this._sendUnsubscribe(['trend_diagnostics'], [], {
+          inst_id: this.trendDiagnosticsConfig?.instId || '',
+        })
+      }
+      this.trendDiagnosticsConfig = null
+    }
+  }
+
   unsubscribeAssistantPatrol(callback) {
     this.listeners.assistantPatrol.delete(callback)
 
@@ -672,9 +733,16 @@ class MarketWebSocket {
       }
     }
 
+    if (this.subscribedChannels.has('trend_diagnostics') && this.trendDiagnosticsConfig) {
+      this._sendSubscribe(['trend_diagnostics'], [], {
+        inst_id: this.trendDiagnosticsConfig.instId,
+        timeline_limit: this.trendDiagnosticsConfig.timelineLimit,
+      })
+    }
+
     // 重新订阅私有通道
     const privateChannels = [...this.subscribedChannels].filter(
-      ch => ['account', 'orders', 'fills', 'alerts', 'assistant_patrol'].includes(ch)
+      ch => ['account', 'orders', 'fills', 'alerts', 'assistant_patrol', 'trend_research'].includes(ch)
     )
     if (privateChannels.length > 0) {
       this._sendSubscribe(privateChannels)
@@ -707,6 +775,12 @@ class MarketWebSocket {
           break
         case 'assistant_patrol':
           this._handleAssistantPatrol(message.data)
+          break
+        case 'trend_research':
+          this._handleTrendResearch(message.data)
+          break
+        case 'trend_diagnostics':
+          this._handleTrendDiagnostics(message.data)
           break
         case 'subscribed':
           console.log('[WS] 订阅成功:', message.channels, message.instruments)
@@ -834,6 +908,26 @@ class MarketWebSocket {
         callback(payload)
       } catch (error) {
         console.error('[WS] 主动巡检回调执行错误:', error)
+      }
+    }
+  }
+
+  _handleTrendResearch(payload) {
+    for (const callback of this.listeners.trendResearch) {
+      try {
+        callback(payload)
+      } catch (error) {
+        console.error('[WS] 趋势研究回调执行错误:', error)
+      }
+    }
+  }
+
+  _handleTrendDiagnostics(payload) {
+    for (const callback of this.listeners.trendDiagnostics) {
+      try {
+        callback(payload)
+      } catch (error) {
+        console.error('[WS] 趋势诊断回调执行错误:', error)
       }
     }
   }

@@ -1,0 +1,6 @@
+{
+  "name": "fixture-app-name",
+  "build": {
+    "productName": "Fixture Product"
+  }
+}

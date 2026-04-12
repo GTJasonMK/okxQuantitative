@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/journal", tags=["journal"])
 
 def _get_storage():
     ctx = get_app_context()
-    return ctx.storage
+    return ctx.storage()
 
 
 # ==================== 日志条目 CRUD ====================

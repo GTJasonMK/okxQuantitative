@@ -6,3 +6,5 @@ from . import agent
 from . import journal
 from . import risk
 from . import scanner
+from . import system_monitor
+from . import trend_research

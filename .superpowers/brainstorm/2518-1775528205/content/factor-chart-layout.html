@@ -1,0 +1,104 @@
+<h2>因子折线图布局草图</h2>
+<p class="subtitle">当前方案：只看当前选中合约，采用 5 张分类图 + 1 张总览图。总览图允许重复展示每类最核心因子。</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">页面结构</div>
+    <div class="mockup-body" style="display:grid;gap:16px;">
+      <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start;">
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">总览图</div>
+          <div style="height:180px;border-radius:12px;background:linear-gradient(180deg,rgba(15,23,42,.7),rgba(15,23,42,.25));padding:12px;position:relative;overflow:hidden;">
+            <div style="position:absolute;inset:12px 12px auto 12px;display:flex;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(249,115,22,.18);">队列不平衡</span>
+              <span style="font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(34,197,94,.18);">OFI</span>
+              <span style="font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(59,130,246,.18);">60s 动量</span>
+              <span style="font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(168,85,247,.18);">基差动量</span>
+              <span style="font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(244,63,94,.18);">冲击成本</span>
+            </div>
+            <svg viewBox="0 0 540 180" style="width:100%;height:100%;margin-top:24px;opacity:.95">
+              <polyline fill="none" stroke="#f97316" stroke-width="3" points="0,120 60,90 120,110 180,70 240,80 300,55 360,60 420,40 480,48 540,34" />
+              <polyline fill="none" stroke="#22c55e" stroke-width="3" points="0,100 60,104 120,84 180,88 240,58 300,64 360,42 420,52 480,26 540,30" />
+              <polyline fill="none" stroke="#3b82f6" stroke-width="3" points="0,132 60,122 120,116 180,110 240,94 300,92 360,76 420,72 480,55 540,50" />
+              <polyline fill="none" stroke="#a855f7" stroke-width="3" points="0,76 60,82 120,88 180,74 240,70 300,82 360,76 420,90 480,84 540,74" />
+              <polyline fill="none" stroke="#f43f5e" stroke-width="3" points="0,146 60,140 120,132 180,126 240,136 300,124 360,118 420,112 480,108 540,98" />
+            </svg>
+          </div>
+          <p style="margin:10px 0 0;color:var(--text-muted);font-size:12px;">用途：先看各大类节奏是否共振、背离、谁先启动。这里允许重复展示每类代表因子。</p>
+        </div>
+        <div style="display:grid;gap:12px;">
+          <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+            <div class="label">图例与控制</div>
+            <ul style="margin:8px 0 0;padding-left:16px;line-height:1.6;color:var(--text-muted);font-size:12px;">
+              <li>按分类开关曲线</li>
+              <li>高亮单因子</li>
+              <li>切换标准化 / 原值</li>
+              <li>悬浮显示原值</li>
+            </ul>
+          </div>
+          <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+            <div class="label">重复展示规则</div>
+            <p style="margin:8px 0 0;color:var(--text-muted);font-size:12px;line-height:1.6;">分类图展示全集；总览图重复每类 1-2 个核心因子，不算遗漏，也不等于冗余。</p>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 1 盘口微观结构</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">queue_imbalance, multi_level_book_imbalance, microprice_premium_bps, spread_level_bps, book_slope</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">更适合分类内标准化</div>
+        </div>
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 2 成交流与订单流</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">signed_volume_imbalance, ofi_top_book, trade_intensity, large_trade_share, buy_burst_strength, sell_burst_strength</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">方向与强度分层显示</div>
+        </div>
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 3 价格结构与波动</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">30s/60s/300s 动量, 区间位置, 突破压力, 已实现波动率, 区间波动, 趋势效率</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">同图内再拆动量 / 波动子图也可</div>
+        </div>
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 4 永续特有结构</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">basis_bps, basis_momentum, funding_rate_level, funding_rate_delta, open_interest_level, open_interest_delta, funding_basis_divergence, premium_shock</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">原值或双轴候选最多的一组</div>
+        </div>
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 5 流动性与冲击成本</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">amihud_illiquidity, impact_per_notional, depth_to_vol_ratio</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">可保留原值，更适合读绝对水平</div>
+        </div>
+        <div style="border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:14px;background:rgba(15,23,42,.2);">
+          <div class="label">图 6 总览图重复因子建议</div>
+          <p style="margin:8px 0;color:var(--text-muted);font-size:12px;">队列不平衡 / OFI / 60s动量 / 基差动量 / 冲击成本</p>
+          <div class="placeholder" style="height:120px;display:flex;align-items:center;justify-content:center;">用于跨类别同屏比较</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="keep-6" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>保留 6 图</h3>
+      <p>信息最完整，总览图允许重复展示核心因子。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="split-price-structure" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>价格结构再拆分</h3>
+      <p>把“动量”和“波动/效率”拆成两图，读起来更干净，但会变成 7 图。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="use-dual-axis-on-perp" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>永续图启用双轴</h3>
+      <p>让基差/资金费率/持仓量尽量保留原值，不强制都标准化。</p>
+    </div>
+  </div>
+</div>

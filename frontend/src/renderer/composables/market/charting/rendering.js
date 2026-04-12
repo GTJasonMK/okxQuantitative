@@ -42,7 +42,6 @@ export function createMarketViewChartRendering(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -1051,6 +1050,11 @@ export function createMarketViewChartRendering(ctx) {
         return;
       }
 
+      // LWC 原生管理 Y 轴自适应，无需手动刷新
+      if (typeof chart.setOption !== 'function') {
+        return;
+      }
+
       const candles = candlesData[normalizedSymbol];
       const latestCandle = Array.isArray(candles) && candles.length > 0
         ? candles[candles.length - 1]
@@ -1189,191 +1193,43 @@ export function createMarketViewChartRendering(ctx) {
 
   // 更新单个图表
   updateChart = (symbol, options = {}) => {
-    const chart = chartInstances[symbol];
     const candles = candlesData[symbol];
-
-    // 验证数据有效性
-    if (!chart || !candles || !Array.isArray(candles) || candles.length === 0) {
+    if (!candles || !Array.isArray(candles) || candles.length === 0) {
       return;
     }
 
-    // 验证数据结构
     const firstCandle = candles[0];
     if (!firstCandle || typeof firstCandle.open !== 'number') {
-      console.warn(`${symbol} K线数据格式无效`);
       return;
     }
 
-    try {
+    const { lwcManagers } = ctx;
+    const manager = lwcManagers?.get(symbol);
+    if (manager) {
       const realtime = options.realtime === true;
-      const annotationOnly = options.annotationOnly === true;
-      const partialUpdateEligible = realtime && canUseRealtimeChartCache(symbol, candles);
-      const annotationOnlyEligible = annotationOnly && canReuseChartRenderCacheBase(symbol, candles);
-      const renderCache = partialUpdateEligible
-        ? syncRealtimeChartRenderCache(symbol, candles)
-        : annotationOnlyEligible
-          ? syncChartAnnotationRenderCache(symbol, candles)
-          : buildChartRenderCache(symbol, candles);
-      const latestCandle = candles[candles.length - 1];
-      const viewportState = getChartViewportState(symbol, candles.length);
-      const latestPrice = resolveCurrentPriceLineValue(symbol, latestCandle);
-      const latestPriceColor = latestCandle && latestCandle.close >= latestCandle.open
-        ? '#26a69a'
-        : '#ef5350';
-      const visibleRange = getViewportVisibleIndexRange(
-        candles.length,
-        viewportState,
-        Math.max(
-          Number.isFinite(renderCache?.renderLength) ? renderCache.renderLength : 0,
-          Array.isArray(renderCache?.dates) ? renderCache.dates.length : 0,
-          getChartRenderLength(candles.length),
-          candles.length
-        )
-      );
-      const includeLatestPriceInAxis = visibleRange.endIndex >= candles.length - 1;
-      const xAxisPatch = buildChartXAxisPatch(renderCache);
-      const graphic = buildChartGraphicOverlays(symbol, chart, {
-        renderCache,
-        latestPrice,
-        latestPriceColor,
-        visibleRange,
-      });
-
-      if (partialUpdateEligible) {
-        applyChartSetOption(symbol, chart, {
-          animation: false,
-          animationDuration: 0,
-          animationDurationUpdate: 0,
-          animationEasingUpdate: 'linear',
-          stateAnimation: {
-            duration: 0,
-          },
-          graphic,
-          series: buildRealtimeChartSeriesPatch(renderCache, latestPrice, latestPriceColor, visibleRange),
-        }, {
-          lazyUpdate: true,
-          silent: true,
-          replaceMerge: ['series', 'graphic'],
-        }, 'series');
-        return;
+      if (realtime) {
+        // 实时增量：更新/追加最后一根 K 线
+        // LWC 的 series.update() 在 time 比已有数据新时自动追加
+        manager.updateLastBar(candles[candles.length - 1]);
+        // 如果 candlesData 被裁剪过（shift），需要定期全量同步
+        // 通过比较管理器内部记录的长度判断是否偏差过大
+        if (manager._syncCounter === undefined) manager._syncCounter = 0;
+        manager._syncCounter++;
+        if (manager._syncCounter >= 100) {
+          // 每 100 次增量更新后做一次全量同步，修正 LWC 和 candlesData 的偏差
+          manager._syncCounter = 0;
+          manager.setData(candles, { symbol, indicators, fitContent: false });
+        }
+      } else {
+        manager.setData(candles, {
+          symbol,
+          indicators: indicators,
+          fitContent: !realtime,
+        });
       }
-
-      const series = buildChartSeries(renderCache, latestPrice, latestPriceColor, visibleRange);
-
-      if (annotationOnlyEligible) {
-        applyChartSetOption(symbol, chart, {
-          xAxis: xAxisPatch,
-          yAxis: buildChartYAxisPatch(symbol, {
-            latestPrice,
-            includeLatestPrice: includeLatestPriceInAxis,
-          }),
-          graphic,
-          series,
-        }, {
-          lazyUpdate: false,
-          silent: true,
-          replaceMerge: ['xAxis', 'yAxis', 'series', 'graphic'],
-        }, 'series');
-        return;
-      }
-
-      const option = {
-        backgroundColor: 'transparent',
-        animation: false,
-        animationDuration: 0,
-        animationDurationUpdate: 0,
-        animationEasingUpdate: 'linear',
-        animationThreshold: 800,
-        hoverLayerThreshold: 120,
-        stateAnimation: {
-          duration: 0,
-        },
-        tooltip: {
-          trigger: 'axis',
-          axisPointer: {
-            type: 'cross',
-            snap: true,
-            label: {
-              backgroundColor: 'rgba(17, 24, 39, 0.96)',
-            },
-          },
-          backgroundColor: 'rgba(22, 27, 34, 0.9)',
-          borderColor: '#30363d',
-          textStyle: { color: '#e6edf3', fontSize: 10 },
-          confine: true,
-          formatter: buildChartTooltipFormatter(symbol),
-        },
-        grid: [
-          { left: 54, right: 14, top: 12, bottom: 104 },
-          { left: 54, right: 14, height: 42, bottom: 52 },
-        ],
-        xAxis: [
-          {
-            type: 'category',
-            data: renderCache.dates,
-            axisLine: { lineStyle: { color: '#30363d' } },
-            axisLabel: xAxisPatch[0].axisLabel,
-            axisPointer: {
-              show: true,
-              label: { show: true },
-            },
-            splitLine: { show: false },
-          },
-          {
-            type: 'category',
-            gridIndex: 1,
-            data: renderCache.dates,
-            axisLine: { lineStyle: { color: '#30363d' } },
-            axisLabel: xAxisPatch[1].axisLabel,
-            splitLine: { show: false },
-          },
-        ],
-        yAxis: [
-          ...buildChartYAxisPatch(symbol, {
-            latestPrice,
-            includeLatestPrice: includeLatestPriceInAxis,
-          }),
-        ],
-        dataZoom: [
-          {
-            id: 'inside',
-            type: 'inside',
-            xAxisIndex: [0, 1],
-            filterMode: 'filter',
-            start: viewportState.start,
-            end: viewportState.end,
-            throttle: 24,
-          },
-          {
-            id: 'slider',
-            type: 'slider',
-            xAxisIndex: [0, 1],
-            filterMode: 'filter',
-            start: viewportState.start,
-            end: viewportState.end,
-            throttle: 24,
-            height: 24,
-            bottom: 6,
-            handleSize: 18,
-            moveHandleSize: 10,
-            showDetail: false,
-          },
-        ],
-        graphic,
-        series,
-      };
-
-      applyChartSetOption(symbol, chart, option, {
-        notMerge: true,
-        lazyUpdate: false,
-        silent: true,
-      }, 'series');
-    } catch (error) {
-      console.error(`更新 ${symbol} 图表失败:`, error);
-      chartErrors[symbol] = '图表渲染失败';
+      return;
     }
   };
-
   // 加载单个币种数据（自动取消旧请求，快速切换时只保留最新调用的结果）
   loadChartData = async (symbol) => {
     const instId = resolveMarketInstId(symbol);

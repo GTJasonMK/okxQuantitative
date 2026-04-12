@@ -794,19 +794,23 @@ async def scan_strategy_parameters(
     scan_keys = [item[0] for item in ordered_items]
     scan_value_groups = [item[1] for item in ordered_items]
 
+    # 预构建所有合法参数组合，跳过验证失败的
+    valid_combos: List[Dict[str, Any]] = []
     for combo_values in product(*scan_value_groups):
         combo_params = dict(request.base_params)
         combo_params.update(dict(zip(scan_keys, combo_values)))
 
         try:
             strategy_cls.validate_params(combo_params)
+            valid_combos.append(combo_params)
         except Exception as e:
             scan_results.append({
                 "params": combo_params,
                 "error": f"参数验证失败: {str(e)}",
             })
-            continue
 
+    # 并发执行所有回测（asyncio.gather 批量分发到线程池）
+    async def _run_single_scan(combo_params):
         strategy = strategy_cls.create_instance(
             symbol=request.symbol,
             timeframe=request.timeframe,
@@ -817,9 +821,7 @@ async def scan_strategy_parameters(
             inst_type=request.inst_type,
             **combo_params,
         )
-
         engine = BacktestEngine()
-
         try:
             result = await asyncio.to_thread(engine.run, strategy, candles)
             result_dict = result.to_dict()
@@ -839,7 +841,6 @@ async def scan_strategy_parameters(
                 },
                 "score": result_dict.get(metric, 0),
             }
-            scan_results.append(entry)
 
             if request.persist_results:
                 persisted_result_dict = _build_backtest_result_payload(
@@ -861,11 +862,16 @@ async def scan_strategy_parameters(
                     strategy_id=strategy_id,
                     params=persisted_result_dict["params"],
                 )
+            return entry
         except Exception as e:
-            scan_results.append({
+            return {
                 "params": combo_params,
                 "error": f"回测执行失败: {str(e)}",
-            })
+            }
+
+    if valid_combos:
+        batch_results = await asyncio.gather(*[_run_single_scan(cp) for cp in valid_combos])
+        scan_results.extend(batch_results)
 
     valid_results = [item for item in scan_results if not item.get("error")]
     reverse = metric_preference[metric] == "desc"

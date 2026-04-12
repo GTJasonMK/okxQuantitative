@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 def _get_storage():
     ctx = get_app_context()
-    return ctx.storage
+    return ctx.storage()
 
 
 # ==================== 请求模型 ====================

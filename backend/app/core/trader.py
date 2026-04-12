@@ -26,6 +26,7 @@ except Exception:
     Account = types.SimpleNamespace(AccountAPI=_missing_okx_dep)
 
 from ..config import config
+from .okx_outbound import get_okx_outbound_governor
 
 
 _T = TypeVar("_T")
@@ -50,6 +51,22 @@ def _is_transient_okx_network_error(exc: Exception) -> bool:
 
     error_text = str(exc)
     return any(marker in error_text for marker in _TRANSIENT_OKX_NETWORK_ERROR_MARKERS)
+
+
+def _require_okx_list_result(action_name: str, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """校验 OKX 列表型响应；失败时显式抛错，避免被上层误判为空数据。"""
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{action_name}失败: 返回格式异常")
+
+    if result.get("code") != "0":
+        raise RuntimeError(
+            f"{action_name}失败: code={result.get('code', '')}, msg={result.get('msg', '未知错误')}"
+        )
+
+    data = result.get("data", [])
+    if not isinstance(data, list):
+        raise RuntimeError(f"{action_name}失败: data 格式异常")
+    return data
 
 
 @dataclass
@@ -79,7 +96,7 @@ class OKXTrader:
     支持指定模式（模拟盘/实盘）
     """
 
-    def __init__(self, is_simulated: bool = True):
+    def __init__(self, is_simulated: bool = True, outbound=None):
         """
         初始化交易器
 
@@ -88,6 +105,7 @@ class OKXTrader:
         """
         self._is_simulated = is_simulated
         self._trade_api = None
+        self._outbound = outbound or get_okx_outbound_governor()
         self._init_api()
 
     def _init_api(self):
@@ -127,6 +145,30 @@ class OKXTrader:
     def mode(self) -> str:
         """获取当前模式"""
         return "simulated" if self._is_simulated else "live"
+
+    def _run_private_rest(self, op_key: str, *, operation):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return operation()
+        return outbound.execute_rest(
+            op_key=op_key,
+            scope_key=f"private_user:{self.mode}",
+            inst_id="",
+            mode=self.mode,
+            operation=operation,
+        )
+
+    def _run_trade_rest(self, op_key: str, *, inst_id: str, operation):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return operation()
+        return outbound.execute_rest(
+            op_key=op_key,
+            scope_key=f"trade_user_inst:{self.mode}:{inst_id}",
+            inst_id=inst_id,
+            mode=self.mode,
+            operation=operation,
+        )
 
     def place_order(
         self,
@@ -178,7 +220,11 @@ class OKXTrader:
                 params["tgtCcy"] = "base_ccy"
 
             try:
-                result = self._trade_api.place_order(**params)
+                result = self._run_trade_rest(
+                    "trade.place_order",
+                    inst_id=inst_id,
+                    operation=lambda: self._trade_api.place_order(**params),
+                )
             except TypeError as e:
                 # 若 SDK 不支持 tgtCcy 参数，宁可拒单也不要用默认行为继续下单（会造成数量单位错配）。
                 if order_type == "market" and "tgtCcy" in str(e):
@@ -234,10 +280,14 @@ class OKXTrader:
             )
 
         try:
-            result = self._trade_api.cancel_order(
-                instId=inst_id,
-                ordId=order_id,
-                clOrdId=client_order_id
+            result = self._run_trade_rest(
+                "trade.cancel_order",
+                inst_id=inst_id,
+                operation=lambda: self._trade_api.cancel_order(
+                    instId=inst_id,
+                    ordId=order_id,
+                    clOrdId=client_order_id,
+                ),
             )
 
             if result.get("code") == "0":
@@ -289,7 +339,11 @@ class OKXTrader:
             if client_order_id:
                 params["clOrdId"] = client_order_id
 
-            result = self._trade_api.get_order(**params)
+            result = self._run_trade_rest(
+                "trade.order_detail",
+                inst_id=inst_id,
+                operation=lambda: self._trade_api.get_order(**params),
+            )
             if result.get("code") == "0" and result.get("data"):
                 return result["data"][0]
             return None
@@ -313,19 +367,22 @@ class OKXTrader:
             订单列表
         """
         if not self.is_available:
-            return []
+            raise RuntimeError("交易 API 未初始化")
 
         try:
-            result = self._trade_api.get_order_list(
-                instType=inst_type,
-                instId=inst_id
+            result = self._run_private_rest(
+                "trade.orders_pending",
+                operation=lambda: self._trade_api.get_order_list(
+                    instType=inst_type,
+                    instId=inst_id,
+                ),
             )
-            if result.get("code") == "0":
-                return result.get("data", [])
-            return []
+            return _require_okx_list_result("获取未成交订单", result)
+        except RuntimeError:
+            raise
         except Exception as e:
             print(f"[OKXTrader] 获取未成交订单失败: {e}")
-            return []
+            raise RuntimeError(f"获取未成交订单异常: {e}") from e
 
     def get_order_history(
         self,
@@ -345,20 +402,23 @@ class OKXTrader:
             订单列表
         """
         if not self.is_available:
-            return []
+            raise RuntimeError("交易 API 未初始化")
 
         try:
-            result = self._trade_api.get_orders_history(
-                instType=inst_type,
-                instId=inst_id,
-                limit=limit
+            result = self._run_private_rest(
+                "trade.orders_history",
+                operation=lambda: self._trade_api.get_orders_history(
+                    instType=inst_type,
+                    instId=inst_id,
+                    limit=limit,
+                ),
             )
-            if result.get("code") == "0":
-                return result.get("data", [])
-            return []
+            return _require_okx_list_result("获取历史订单", result)
+        except RuntimeError:
+            raise
         except Exception as e:
             print(f"[OKXTrader] 获取历史订单失败: {e}")
-            return []
+            raise RuntimeError(f"获取历史订单异常: {e}") from e
 
     def get_fills(
         self,
@@ -378,20 +438,23 @@ class OKXTrader:
             成交记录列表
         """
         if not self.is_available:
-            return []
+            raise RuntimeError("交易 API 未初始化")
 
         try:
-            result = self._trade_api.get_fills(
-                instType=inst_type,
-                instId=inst_id,
-                limit=limit
+            result = self._run_private_rest(
+                "trade.fills",
+                operation=lambda: self._trade_api.get_fills(
+                    instType=inst_type,
+                    instId=inst_id,
+                    limit=limit,
+                ),
             )
-            if result.get("code") == "0":
-                return result.get("data", [])
-            return []
+            return _require_okx_list_result("获取成交记录", result)
+        except RuntimeError:
+            raise
         except Exception as e:
             print(f"[OKXTrader] 获取成交记录失败: {e}")
-            return []
+            raise RuntimeError(f"获取成交记录异常: {e}") from e
 
     def get_fills_history(
         self,
@@ -418,12 +481,15 @@ class OKXTrader:
             return []
 
         try:
-            result = self._trade_api.get_fills_history(
-                instType=inst_type,
-                instId=inst_id,
-                limit=limit,
-                after=after,
-                before=before
+            result = self._run_private_rest(
+                "trade.fills_history",
+                operation=lambda: self._trade_api.get_fills_history(
+                    instType=inst_type,
+                    instId=inst_id,
+                    limit=limit,
+                    after=after,
+                    before=before,
+                ),
             )
             if result.get("code") == "0":
                 return result.get("data", [])
@@ -509,11 +575,14 @@ class OKXTrader:
             return {"error": "API 未初始化"}
 
         try:
-            result = self._trade_api.set_leverage(
-                instId=inst_id,
-                lever=lever,
-                mgnMode=mgn_mode,
-                posSide=pos_side if pos_side else None
+            result = self._run_private_rest(
+                "account.set_leverage",
+                operation=lambda: self._trade_api.set_leverage(
+                    instId=inst_id,
+                    lever=lever,
+                    mgnMode=mgn_mode,
+                    posSide=pos_side if pos_side else None,
+                ),
             )
             if result.get("code") == "0":
                 return {"success": True, "data": result.get("data", [])}
@@ -536,9 +605,12 @@ class OKXTrader:
             return {"error": "API 未初始化"}
 
         try:
-            result = self._trade_api.get_leverage(
-                instId=inst_id,
-                mgnMode=mgn_mode
+            result = self._run_private_rest(
+                "account.get_leverage",
+                operation=lambda: self._trade_api.get_leverage(
+                    instId=inst_id,
+                    mgnMode=mgn_mode,
+                ),
             )
             if result.get("code") == "0" and result.get("data"):
                 return {"success": True, "data": result["data"]}
@@ -587,16 +659,20 @@ class OKXTrader:
             )
 
         try:
-            result = self._trade_api.place_order(
-                instId=inst_id,
-                tdMode=td_mode,
-                side=side,
-                posSide=pos_side,
-                ordType=order_type,
-                sz=size,
-                px=price if order_type == "limit" else "",
-                reduceOnly=reduce_only,
-                clOrdId=client_order_id
+            result = self._run_trade_rest(
+                "trade.place_order",
+                inst_id=inst_id,
+                operation=lambda: self._trade_api.place_order(
+                    instId=inst_id,
+                    tdMode=td_mode,
+                    side=side,
+                    posSide=pos_side,
+                    ordType=order_type,
+                    sz=size,
+                    px=price if order_type == "limit" else "",
+                    reduceOnly=reduce_only,
+                    clOrdId=client_order_id,
+                ),
             )
 
             if result.get("code") == "0":
@@ -628,7 +704,7 @@ class OKXAccount:
     支持指定模式（模拟盘/实盘）
     """
 
-    def __init__(self, is_simulated: bool = True):
+    def __init__(self, is_simulated: bool = True, outbound=None):
         """
         初始化账户管理器
 
@@ -637,6 +713,7 @@ class OKXAccount:
         """
         self._is_simulated = is_simulated
         self._account_api = None
+        self._outbound = outbound or get_okx_outbound_governor()
         self._init_api()
 
     def _init_api(self):
@@ -676,6 +753,18 @@ class OKXAccount:
     def mode(self) -> str:
         """获取当前模式"""
         return "simulated" if self._is_simulated else "live"
+
+    def _run_private_rest(self, op_key: str, *, inst_id: str = "", operation):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return operation()
+        return outbound.execute_rest(
+            op_key=op_key,
+            scope_key=f"private_user:{self.mode}",
+            inst_id=inst_id,
+            mode=self.mode,
+            operation=operation,
+        )
 
     def _call_account_api_with_retry(
         self,
@@ -731,7 +820,10 @@ class OKXAccount:
         try:
             result = self._call_account_api_with_retry(
                 "get_balance",
-                lambda: self._account_api.get_account_balance(ccy=ccy),
+                lambda: self._run_private_rest(
+                    "account.balance",
+                    operation=lambda: self._account_api.get_account_balance(ccy=ccy),
+                ),
             )
             print(f"[OKXAccount-{self.mode}] get_account_balance 返回: code={result.get('code')}, msg={result.get('msg')}")
             if result.get("code") == "0" and result.get("data"):
@@ -753,19 +845,23 @@ class OKXAccount:
             持仓列表
         """
         if not self.is_available:
-            return []
+            raise RuntimeError("账户 API 未初始化")
 
         try:
-            result = self._account_api.get_positions(
-                instType=inst_type,
-                instId=inst_id
+            result = self._run_private_rest(
+                "account.positions",
+                inst_id=inst_id,
+                operation=lambda: self._account_api.get_positions(
+                    instType=inst_type,
+                    instId=inst_id,
+                ),
             )
-            if result.get("code") == "0":
-                return result.get("data", [])
-            return []
+            return _require_okx_list_result("获取持仓", result)
+        except RuntimeError:
+            raise
         except Exception as e:
             print(f"[OKXAccount] 获取持仓失败: {e}")
-            return []
+            raise RuntimeError(f"获取持仓异常: {e}") from e
 
     def get_max_avail_size(
         self,
@@ -797,7 +893,11 @@ class OKXAccount:
         # 1) 先获取 max-avail-size（可用余额口径，含 availBuy/availSell）
         avail_payload: Dict[str, Any] = {}
         try:
-            resp = self._account_api.get_max_avail_size(instId=inst_id, tdMode=td_mode)
+            resp = self._run_private_rest(
+                "account.max_avail_size",
+                inst_id=inst_id,
+                operation=lambda: self._account_api.get_max_avail_size(instId=inst_id, tdMode=td_mode),
+            )
             if resp.get("code") == "0" and resp.get("data"):
                 avail_payload = resp["data"][0] or {}
         except Exception as e:
@@ -820,7 +920,11 @@ class OKXAccount:
         try:
             get_max_order_size = getattr(self._account_api, "get_max_order_size", None)
             if callable(get_max_order_size):
-                resp2 = get_max_order_size(instId=inst_id, tdMode=td_mode)
+                resp2 = self._run_private_rest(
+                    "account.max_size",
+                    inst_id=inst_id,
+                    operation=lambda: get_max_order_size(instId=inst_id, tdMode=td_mode),
+                )
                 if resp2.get("code") == "0" and resp2.get("data"):
                     data2 = resp2["data"][0] or {}
                     max_buy_base = str(data2.get("maxBuy", "0") or "0")
@@ -868,7 +972,10 @@ class OKXAccount:
             return {}
 
         try:
-            result = self._account_api.get_account_config()
+            result = self._run_private_rest(
+                "account.config",
+                operation=lambda: self._account_api.get_account_config(),
+            )
             if result.get("code") == "0" and result.get("data"):
                 return result["data"][0]
             return {}
@@ -890,7 +997,10 @@ class OKXAccount:
             return {"success": False, "error": "API 未初始化"}
 
         try:
-            result = self._account_api.set_position_mode(posMode=pos_mode)
+            result = self._run_private_rest(
+                "account.set_position_mode",
+                operation=lambda: self._account_api.set_position_mode(posMode=pos_mode),
+            )
             if result.get("code") == "0":
                 return {"success": True}
             return {"success": False, "error": result.get("msg", "设置持仓模式失败")}
@@ -923,19 +1033,23 @@ class OKXAccount:
             - mgnMode: 保证金模式
         """
         if not self.is_available:
-            return []
+            raise RuntimeError("账户 API 未初始化")
 
         try:
-            result = self._account_api.get_positions(
-                instType=inst_type,
-                instId=inst_id
+            result = self._run_private_rest(
+                "account.positions",
+                inst_id=inst_id,
+                operation=lambda: self._account_api.get_positions(
+                    instType=inst_type,
+                    instId=inst_id,
+                ),
             )
-            if result.get("code") == "0":
-                return result.get("data", [])
-            return []
+            return _require_okx_list_result("获取合约持仓", result)
+        except RuntimeError:
+            raise
         except Exception as e:
             print(f"[OKXAccount] 获取合约持仓失败: {e}")
-            return []
+            raise RuntimeError(f"获取合约持仓异常: {e}") from e
 
     def get_max_contract_size(
         self,
@@ -960,9 +1074,17 @@ class OKXAccount:
             # 优先调用 get_max_order_size；若 SDK 不支持则退化为 get_max_avail_size（可能不包含 maxBuy/maxSell）。
             get_max_order_size = getattr(self._account_api, "get_max_order_size", None)
             if callable(get_max_order_size):
-                result = get_max_order_size(instId=inst_id, tdMode=td_mode)
+                result = self._run_private_rest(
+                    "account.max_size",
+                    inst_id=inst_id,
+                    operation=lambda: get_max_order_size(instId=inst_id, tdMode=td_mode),
+                )
             else:
-                result = self._account_api.get_max_avail_size(instId=inst_id, tdMode=td_mode)
+                result = self._run_private_rest(
+                    "account.max_avail_size",
+                    inst_id=inst_id,
+                    operation=lambda: self._account_api.get_max_avail_size(instId=inst_id, tdMode=td_mode),
+                )
             if result.get("code") == "0" and result.get("data"):
                 return result["data"][0]
             return {"maxBuy": "0", "maxSell": "0"}

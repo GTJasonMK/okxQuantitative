@@ -260,6 +260,142 @@
             </div>
           </div>
         </div>
+
+        <div class="card trend-config-card">
+          <div class="card-header">
+            <div class="header-left">
+              <span class="card-icon">&#8767;</span>
+              <h3 class="card-title">趋势研究配置</h3>
+            </div>
+            <span class="status-badge" :class="trendResearchConfig.enabled ? 'success' : 'warning'">
+              {{ trendResearchConfig.enabled ? '已启用' : '未启用' }}
+            </span>
+          </div>
+
+          <div class="assistant-toggle-row">
+            <label class="checkbox-toggle">
+              <input v-model="trendResearchConfig.enabled" type="checkbox" />
+              <span>启用永续趋势研究热采集</span>
+            </label>
+            <span class="mode-status" :class="{ configured: trendResearchConfig.appliedWhitelistCount > 0 }">
+              {{ trendResearchConfig.runtimeStatusText }}
+            </span>
+          </div>
+
+          <div class="credentials-section active trend-credentials-section">
+            <div class="section-header">
+              <div class="section-title">
+                <span class="dot simulated"></span>
+                <span>USDT 永续白名单</span>
+              </div>
+              <button
+                class="btn btn-secondary btn-sm"
+                @click="loadTrendResearchInstruments"
+                :disabled="trendResearchInstrumentState.loading"
+              >
+                {{ trendResearchInstrumentState.loading ? '刷新中...' : '刷新合约列表' }}
+              </button>
+            </div>
+            <div class="credentials-form">
+              <div class="form-row">
+                <label>搜索合约</label>
+                <input
+                  v-model="trendResearchInstrumentState.search"
+                  type="text"
+                  class="input"
+                  placeholder="搜索 BTC / BTC-USDT-SWAP"
+                />
+              </div>
+              <div v-if="trendResearchInstrumentState.error" class="trend-picker-error">
+                {{ trendResearchInstrumentState.error }}
+              </div>
+              <div v-else class="trend-picker-grid">
+                <div class="trend-picker-list">
+                  <div v-if="!visibleTrendResearchOptions.length" class="trend-picker-empty">
+                    当前没有可选的 USDT 永续合约
+                  </div>
+                  <label
+                    v-for="item in visibleTrendResearchOptions"
+                    :key="item.instId"
+                    class="trend-picker-option"
+                  >
+                    <input
+                      v-model="trendResearchConfig.selectedInstIds"
+                      type="checkbox"
+                      :value="item.instId"
+                    />
+                    <div class="trend-picker-option-copy">
+                      <span class="trend-picker-option-id">{{ item.instId }}</span>
+                      <span class="trend-picker-option-meta">{{ item.baseCcy }}/{{ item.quoteCcy }}</span>
+                    </div>
+                  </label>
+                </div>
+                <div class="trend-picker-selected">
+                  <div class="trend-picker-selected-header">
+                    <span>已选合约</span>
+                    <span>{{ trendResearchConfig.selectedInstIds.length }}</span>
+                  </div>
+                  <div v-if="!trendResearchConfig.selectedInstIds.length" class="trend-picker-empty">
+                    尚未选择任何合约
+                  </div>
+                  <div
+                    v-for="instId in trendResearchConfig.selectedInstIds"
+                    :key="instId"
+                    class="trend-selected-chip"
+                    :class="{ stale: isMissingTrendResearchSelection(instId) }"
+                  >
+                    <div class="trend-selected-copy">
+                      <span class="trend-selected-id">{{ instId }}</span>
+                      <span v-if="isMissingTrendResearchSelection(instId)" class="trend-selected-note">
+                        当前不在 OKX 返回列表中
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn-chip-remove"
+                      @click="removeTrendResearchSelection(instId)"
+                    >
+                      移除
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="assistant-form-grid">
+                <div class="form-row">
+                  <label>特征周期（秒）</label>
+                  <input v-model.number="trendResearchConfig.featureBarSeconds" type="number" min="1" max="60" class="input" />
+                </div>
+                <div class="form-row">
+                  <label>状态同步周期（秒）</label>
+                  <input v-model.number="trendResearchConfig.stateSyncSeconds" type="number" min="5" max="3600" class="input" />
+                </div>
+                <div class="form-row">
+                  <label>盘口频道</label>
+                  <select v-model="trendResearchConfig.bookChannel" class="input">
+                    <option value="books5">books5</option>
+                    <option value="bbo-tbt">bbo-tbt</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" @click="saveTrendResearchConfig" :disabled="savingTrendResearchConfig">
+              {{ savingTrendResearchConfig ? '保存中...' : '保存并热更新' }}
+            </button>
+          </div>
+
+          <div class="config-tip">
+            <div class="tip-icon">&#9432;</div>
+            <div class="tip-content">
+              <p><strong>当前状态：</strong>{{ trendResearchConfig.runtimeStatusText }}</p>
+              <p><strong>已生效白名单：</strong>{{ trendResearchConfig.appliedWhitelistCount }} 个永续</p>
+              <p><strong>候选来源：</strong>列表来自 OKX 当前返回的 SWAP 合约，并筛选为 live 的 USDT 永续。</p>
+              <p><strong>异常提示：</strong>如果某个已选合约不在最新 OKX 列表中，会被保留并显式标记。</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -299,35 +435,10 @@
           </div>
         </div>
 
-        <!-- API调用频率 -->
-        <div class="card">
-          <div class="card-header compact">
-            <div class="header-left">
-              <span class="card-icon">&#9889;</span>
-              <h3 class="card-title">API 调用</h3>
-            </div>
-            <span class="status-badge small" :class="getRateLimitClass()">
-              {{ rateLimitStatus.usagePercent }}%
-            </span>
-          </div>
-          <div class="rate-limit-bar">
-            <div class="rate-limit-progress" :style="{ width: rateLimitStatus.usagePercent + '%' }" :class="getRateLimitClass()"></div>
-          </div>
-          <div class="stats-row">
-            <div class="stat-mini">
-              <span class="value">{{ rateLimitStatus.callsPerMinute }}</span>
-              <span class="label">当前/分钟</span>
-            </div>
-            <div class="stat-mini">
-              <span class="value">{{ rateLimitStatus.remainingQuota }}</span>
-              <span class="label">剩余配额</span>
-            </div>
-            <div class="stat-mini">
-              <span class="value">{{ rateLimitStatus.totalCalls.toLocaleString() }}</span>
-              <span class="label">总调用</span>
-            </div>
-          </div>
-        </div>
+        <OkxOutboundTimelineCard
+          :active="settingsTab === 'monitor'"
+          :refresh-key="monitorRefreshKey"
+        />
 
         <!-- 缓存状态 -->
         <div class="card">
@@ -426,9 +537,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { api, updateBaseURL, getBaseURL } from '../services/api';
 import { useAppStore } from '../stores/app';
+import OkxOutboundTimelineCard from '../components/settings/OkxOutboundTimelineCard.vue';
+import {
+  buildTrendResearchInstrumentOptions,
+  filterTrendResearchInstrumentOptions,
+} from '../components/settings/trendResearchInstrumentOptions.mjs';
 
 // 状态
 const settingsTab = ref('config');
@@ -436,7 +552,9 @@ const isConnected = ref(false);
 const isRefreshing = ref(false);
 const savingOKXConfig = ref(false);
 const savingAssistantConfig = ref(false);
+const savingTrendResearchConfig = ref(false);
 const testingOKXConnection = ref(false);
+const monitorRefreshKey = ref(0);
 
 // 后端地址
 const backendUrl = ref('');
@@ -481,6 +599,26 @@ const assistantStatus = reactive({
   providerName: '',
 });
 
+const trendResearchConfig = reactive({
+  enabled: false,
+  selectedInstIds: [],
+  featureBarSeconds: 1,
+  stateSyncSeconds: 30,
+  bookChannel: 'books5',
+  appliedWhitelistCount: 0,
+  runtimeStatus: 'disabled',
+  runtimeStatusText: '未加载',
+});
+
+const trendResearchInstrumentState = reactive({
+  loading: false,
+  error: '',
+  search: '',
+  sourceInstruments: [],
+  options: [],
+  missingSelected: [],
+});
+
 // 系统状态
 const systemStatus = reactive({
   uptime: null,
@@ -512,22 +650,6 @@ const dataStatus = reactive({
   dbSize: '0 B',
   lastSync: null,
 });
-
-// API调用频率状态
-const rateLimitStatus = reactive({
-  totalCalls: 0,
-  callsPerMinute: 0,
-  rateLimit: 3000,
-  remainingQuota: 3000,
-  usagePercent: 0,
-});
-
-// 获取频率限制进度条的样式类
-const getRateLimitClass = () => {
-  if (rateLimitStatus.usagePercent < 50) return 'success';
-  if (rateLimitStatus.usagePercent < 80) return 'warning';
-  return 'error';
-};
 
 // 刷新系统状态
 const refreshStatus = async () => {
@@ -570,19 +692,12 @@ const refreshStatus = async () => {
       dataStatus.lastSync = result.data.last_sync;
     }
 
-    // API调用频率状态
-    if (result.rate_limit) {
-      rateLimitStatus.totalCalls = result.rate_limit.total_calls;
-      rateLimitStatus.callsPerMinute = result.rate_limit.calls_per_minute;
-      rateLimitStatus.rateLimit = result.rate_limit.rate_limit;
-      rateLimitStatus.remainingQuota = result.rate_limit.remaining_quota;
-      rateLimitStatus.usagePercent = result.rate_limit.usage_percent;
-    }
   } catch (error) {
     isConnected.value = false;
     console.error('加载系统状态失败:', error);
   } finally {
     isRefreshing.value = false;
+    monitorRefreshKey.value += 1;
   }
 };
 
@@ -621,6 +736,86 @@ const loadAssistantConfig = async () => {
     console.error('加载 AI 助手配置失败:', error);
   }
 };
+
+const applyTrendResearchInstrumentCatalog = (instruments = trendResearchInstrumentState.sourceInstruments) => {
+  const catalog = buildTrendResearchInstrumentOptions({
+    instruments,
+    selectedInstIds: trendResearchConfig.selectedInstIds,
+  });
+  trendResearchInstrumentState.options = catalog.options;
+  trendResearchInstrumentState.missingSelected = catalog.missingSelected;
+};
+
+const visibleTrendResearchOptions = computed(() => {
+  return filterTrendResearchInstrumentOptions(
+    trendResearchInstrumentState.options,
+    trendResearchInstrumentState.search,
+  );
+});
+
+const missingTrendResearchSelectionIds = computed(() => {
+  return new Set(trendResearchInstrumentState.missingSelected.map((item) => item.instId));
+});
+
+const isMissingTrendResearchSelection = (instId) => {
+  return missingTrendResearchSelectionIds.value.has(instId);
+};
+
+const syncTrendResearchConfig = (result = {}) => {
+  const settings = result.settings || result.data?.settings || {};
+  const whitelist = Array.isArray(settings.whitelist) ? settings.whitelist : [];
+  const status = result.status || result.data?.status || 'disabled';
+
+  trendResearchConfig.enabled = !!settings.enabled;
+  trendResearchConfig.selectedInstIds = [...whitelist];
+  trendResearchConfig.featureBarSeconds = Number(settings.feature_bar_seconds) || 1;
+  trendResearchConfig.stateSyncSeconds = Number(settings.state_sync_seconds) || 30;
+  trendResearchConfig.bookChannel = settings.book_channel || 'books5';
+  trendResearchConfig.appliedWhitelistCount = whitelist.length;
+  trendResearchConfig.runtimeStatus = status;
+  trendResearchConfig.runtimeStatusText = ({
+    disabled: '未启用',
+    unconfigured: '白名单为空',
+    collecting: '正在采集',
+    ready: '已就绪',
+  })[status] || '未知状态';
+  applyTrendResearchInstrumentCatalog();
+};
+
+const loadTrendResearchConfig = async () => {
+  try {
+    const result = await api.getTrendResearchConfig();
+    syncTrendResearchConfig(result);
+  } catch (error) {
+    console.error('加载趋势研究配置失败:', error);
+  }
+};
+
+const loadTrendResearchInstruments = async () => {
+  trendResearchInstrumentState.loading = true;
+  trendResearchInstrumentState.error = '';
+  try {
+    const result = await api.getInstruments('SWAP');
+    const instruments = Array.isArray(result?.data) ? result.data : [];
+    trendResearchInstrumentState.sourceInstruments = instruments;
+    applyTrendResearchInstrumentCatalog(instruments);
+  } catch (error) {
+    trendResearchInstrumentState.error = error?.response?.data?.detail || error?.message || '合约列表加载失败';
+  } finally {
+    trendResearchInstrumentState.loading = false;
+  }
+};
+
+const removeTrendResearchSelection = (instId) => {
+  trendResearchConfig.selectedInstIds = trendResearchConfig.selectedInstIds.filter((item) => item !== instId);
+};
+
+watch(
+  () => [...trendResearchConfig.selectedInstIds],
+  () => {
+    applyTrendResearchInstrumentCatalog();
+  },
+);
 
 // 保存OKX配置
 const saveOKXConfig = async () => {
@@ -710,6 +905,27 @@ const saveAssistantConfig = async () => {
   }
 };
 
+const saveTrendResearchConfig = async () => {
+  savingTrendResearchConfig.value = true;
+  try {
+    const result = await api.updateTrendResearchConfig({
+      enabled: trendResearchConfig.enabled,
+      whitelist: [...trendResearchConfig.selectedInstIds],
+      feature_bar_seconds: trendResearchConfig.featureBarSeconds,
+      state_sync_seconds: trendResearchConfig.stateSyncSeconds,
+      book_channel: trendResearchConfig.bookChannel,
+    });
+    syncTrendResearchConfig(result);
+    await loadTrendResearchInstruments();
+    alert('趋势研究配置已保存并热更新');
+  } catch (error) {
+    const detail = error?.response?.data?.detail || error.message || '未知错误';
+    alert('保存趋势研究配置失败: ' + detail);
+  } finally {
+    savingTrendResearchConfig.value = false;
+  }
+};
+
 // 保存后端地址
 const saveBackendUrl = () => {
   const url = backendUrl.value.trim();
@@ -734,6 +950,7 @@ onMounted(() => {
   refreshStatus();
   loadOKXConfig();
   loadAssistantConfig();
+  loadTrendResearchConfig().then(() => loadTrendResearchInstruments());
 });
 </script>
 
@@ -966,6 +1183,10 @@ onMounted(() => {
   padding: 24px;
 }
 
+.trend-config-card {
+  padding: 24px;
+}
+
 .okx-overview {
   display: flex;
   gap: 32px;
@@ -1045,6 +1266,10 @@ onMounted(() => {
 }
 
 .assistant-credentials-section {
+  opacity: 1;
+}
+
+.trend-credentials-section {
   opacity: 1;
 }
 
@@ -1344,6 +1569,129 @@ onMounted(() => {
   color: var(--accent-color);
 }
 
+.trend-picker-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.9fr);
+  gap: 12px;
+}
+
+.trend-picker-list,
+.trend-picker-selected {
+  min-height: 240px;
+  max-height: 340px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.trend-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trend-picker-selected {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trend-picker-selected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.trend-picker-option,
+.trend-selected-chip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trend-picker-option {
+  cursor: pointer;
+}
+
+.trend-picker-option input,
+.trend-selected-chip button {
+  flex-shrink: 0;
+}
+
+.trend-picker-option-copy,
+.trend-selected-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trend-picker-option-id,
+.trend-selected-id {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.trend-picker-option-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.trend-selected-note,
+.trend-picker-error,
+.trend-picker-empty {
+  color: #f59e0b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.trend-picker-error {
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.trend-picker-empty {
+  padding: 10px 4px;
+}
+
+.trend-selected-chip.stale {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.btn-chip-remove {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-chip-remove:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* ========== 右侧统计卡片 ========== */
 .stats-grid {
   display: grid;
@@ -1422,36 +1770,6 @@ onMounted(() => {
   text-transform: uppercase;
 }
 
-/* API 进度条 */
-.rate-limit-bar {
-  height: 6px;
-  background: var(--bg-primary);
-  border-radius: 3px;
-  overflow: hidden;
-  margin-bottom: 14px;
-}
-
-.rate-limit-progress {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.rate-limit-progress.success {
-  background: linear-gradient(90deg, var(--color-success) 0%, #16A34A 100%);
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.32);
-}
-
-.rate-limit-progress.warning {
-  background: linear-gradient(90deg, var(--accent-color) 0%, #D97706 100%);
-  box-shadow: 0 0 8px rgba(247, 147, 26, 0.32);
-}
-
-.rate-limit-progress.error {
-  background: linear-gradient(90deg, var(--color-danger) 0%, #DC2626 100%);
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.32);
-}
-
 /* 后端配置 */
 .backend-config {
   display: flex;
@@ -1514,7 +1832,8 @@ onMounted(() => {
   }
 
   .assistant-form-grid,
-  .mode-selector {
+  .mode-selector,
+  .trend-picker-grid {
     grid-template-columns: 1fr;
   }
 

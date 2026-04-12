@@ -256,6 +256,15 @@ def _request_guardian_run_now_safely(source: str) -> None:
         print(f"[market] guardian.request_run_now 失败({source}): {exc}")
 
 
+def _has_remote_market_fetcher(fetcher: Optional[CachedDataFetcher]) -> bool:
+    """判断是否具备可用的远端行情抓取器。"""
+    if not fetcher:
+        return False
+    if hasattr(fetcher, "fetcher"):
+        return getattr(fetcher, "fetcher") is not None
+    return True
+
+
 def _restore_watched_symbols_snapshot(records: List[Dict[str, Any]]) -> None:
     if not save_watched_symbols(records):
         raise RuntimeError("恢复关注币种快照失败")
@@ -441,8 +450,10 @@ async def get_ticker(
             print(f"[market] get_ticker 本地回退失败 {inst_id}: {exc}")
 
     if not ticker:
-        if fetch_error and not fetcher:
+        if fetch_error:
             raise HTTPException(status_code=503, detail=f"获取行情失败: {str(fetch_error)}")
+        if not _has_remote_market_fetcher(fetcher):
+            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用行情缓存")
         raise HTTPException(status_code=404, detail=f"未找到交易对 {inst_id}，可能是API未配置或网络问题")
 
     return TickerResponse(
@@ -495,8 +506,11 @@ async def get_tickers(
                 fetch_error = exc
             print(f"[market] get_tickers 本地回退失败 {inst_type.value}: {exc}")
 
-    if fetch_error and not tickers and not fetcher:
-        raise HTTPException(status_code=503, detail=f"获取行情列表失败: {str(fetch_error)}")
+    if not tickers:
+        if fetch_error:
+            raise HTTPException(status_code=503, detail=f"获取行情列表失败: {str(fetch_error)}")
+        if not _has_remote_market_fetcher(fetcher):
+            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用行情缓存")
 
     return TickerListResponse(
         data=[
@@ -561,8 +575,11 @@ async def get_recent_trades(
                 fetch_error = exc
             print(f"[market] get_recent_trades 本地回退失败 {inst_id}: {exc}")
 
-    if fetch_error and not trades and not fetcher:
-        raise HTTPException(status_code=503, detail=f"获取逐笔成交失败: {str(fetch_error)}")
+    if not trades:
+        if fetch_error:
+            raise HTTPException(status_code=503, detail=f"获取逐笔成交失败: {str(fetch_error)}")
+        if not _has_remote_market_fetcher(fetcher):
+            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用逐笔缓存")
 
     return DataResponse(data=[trade.to_dict() for trade in trades])
 

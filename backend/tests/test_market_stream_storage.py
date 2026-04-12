@@ -13,6 +13,9 @@ from app.core.websocket_manager import CandleData, TickerData
 
 
 class _DummyRateLimiter:
+    def acquire(self, count: int = 1):
+        self.last_count = count
+
     def record_call(self, count: int = 1):
         self.last_count = count
 
@@ -103,6 +106,35 @@ def test_recent_trades_initializes_from_remote_and_persists(tmp_path):
     stored = storage.get_recent_trades("BTC-USDT", limit=3, inst_type="SPOT")
     assert len(stored) == 3
     assert stored[0].trade_id == "trade-0"
+
+
+def test_orderbook_fetch_propagates_rate_limit_errors_before_remote_call(tmp_path):
+    storage = DataStorage(tmp_path / "market.db")
+
+    class ExplodingLimiter:
+        def acquire(self, count: int = 1):
+            raise RuntimeError("rate limit exceeded")
+
+        def record_call(self, count: int = 1):  # pragma: no cover
+            raise AssertionError("rate limit errors should happen before record_call")
+
+    class RemoteFetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def get_orderbook(self, inst_id: str, size: int):
+            self.calls += 1
+            return {"inst_id": inst_id, "size": size}
+
+    remote = RemoteFetcher()
+    fetcher = _build_cached_fetcher(storage, remote)
+    fetcher._rate_limiter = ExplodingLimiter()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        fetcher.get_orderbook("BTC-USDT", 20)
+
+    assert "rate limit exceeded" in str(exc_info.value)
+    assert remote.calls == 0
 
 
 @pytest.mark.asyncio

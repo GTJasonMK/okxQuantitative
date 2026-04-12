@@ -13,6 +13,11 @@ from ..config import config
 from ..utils.timeframes import estimate_days_for_candle_count, timeframe_to_ms
 
 
+API_RATE_LIMIT_WINDOW_SECONDS = 60
+API_RATE_LIMIT_WAIT_SLICE_SECONDS = 0.1
+API_RATE_LIMIT_MAX_WAIT_SECONDS = 15.0
+
+
 def _is_data_stale(candles: List[Candle], timeframe: str, tolerance_factor: float = 2.0) -> bool:
     """
     检查数据是否过时
@@ -76,9 +81,34 @@ class APIRateLimiter:
 
     def _cleanup(self, now: float):
         """清理过期记录"""
-        cutoff = now - 60
+        cutoff = now - API_RATE_LIMIT_WINDOW_SECONDS
         while self._call_times and self._call_times[0] < cutoff:
             self._call_times.popleft()
+
+    def acquire(self, count: int = 1, *, max_wait_seconds: float = API_RATE_LIMIT_MAX_WAIT_SECONDS):
+        """获取调用配额；超时则显式抛错，避免继续击穿上游频率限制。"""
+        normalized_count = max(int(count or 1), 1)
+        if normalized_count > self._rate_limit:
+            raise RuntimeError(f"单次请求配额 {normalized_count} 超过 OKX 限流上限 {self._rate_limit}")
+
+        deadline = time.time() + max(max_wait_seconds, 0.0)
+        while True:
+            now = time.time()
+            with self._lock:
+                self._cleanup(now)
+                available = self._rate_limit - len(self._call_times)
+                if available >= normalized_count:
+                    for _ in range(normalized_count):
+                        self._call_times.append(now)
+                    self._total_calls += normalized_count
+                    return
+
+                oldest = self._call_times[0] if self._call_times else now
+                wait_seconds = max((oldest + API_RATE_LIMIT_WINDOW_SECONDS) - now, API_RATE_LIMIT_WAIT_SLICE_SECONDS)
+
+            if now + wait_seconds > deadline:
+                raise RuntimeError("OKX API 频率限制已触发，当前请求在等待窗口内无法获取配额")
+            time.sleep(min(wait_seconds, API_RATE_LIMIT_WAIT_SLICE_SECONDS))
 
     def get_calls_per_minute(self) -> int:
         """获取当前分钟内的调用次数"""
@@ -191,9 +221,17 @@ class CachedDataFetcher:
                 "sync_cooldowns": len(self._sync_times),
             }
 
-    def _record_api_call(self, count: int = 1):
-        """记录API调用"""
-        self._rate_limiter.record_call(count)
+    def _acquire_api_quota(self, count: int = 1):
+        """获取远端调用配额。"""
+        self._rate_limiter.acquire(count)
+
+    def _requires_legacy_pre_acquire(self) -> bool:
+        """
+        兼容测试/注入场景：
+        - 真实 DataFetcher 现在在实际出站处自行做官方规则级限流；
+        - 仅当注入的是不具备 outbound governor 的旧式/测试 fetcher 时，才走旧配额入口。
+        """
+        return self._fetcher is not None and not hasattr(self._fetcher, "_outbound")
 
     def _get_storage(self) -> Optional[DataStorage]:
         """获取本地存储实例，测试场景允许注入临时存储。"""
@@ -299,8 +337,9 @@ class CachedDataFetcher:
                 return local_ticker
 
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 ticker = self._fetcher.get_ticker(inst_id)
                 if ticker:
                     if storage:
@@ -357,8 +396,9 @@ class CachedDataFetcher:
                 return ticker_dict
 
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 from .data_fetcher import InstType
 
                 inst_type_enum = InstType(normalized_inst_type)
@@ -413,8 +453,9 @@ class CachedDataFetcher:
                 return local_trades
 
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 remote_trades = self._fetcher.get_recent_trades(inst_id, limit)
                 if remote_trades:
                     if storage:
@@ -438,30 +479,71 @@ class CachedDataFetcher:
     def get_orderbook(self, inst_id: str, size: int = 20) -> Optional[Dict[str, Any]]:
         """获取实时盘口深度。"""
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 return self._fetcher.get_orderbook(inst_id, size)
             except Exception as e:
                 print(f"[CachedDataFetcher] 获取盘口失败 {inst_id}: {e}")
-                return None
+                raise
+        return None
+
+    def get_mark_price(self, inst_id: str) -> Optional[Dict[str, Any]]:
+        if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
+            return self._fetcher.get_mark_price(inst_id)
+        return None
+
+    def get_index_price(self, inst_id: str) -> Optional[Dict[str, Any]]:
+        if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
+            return self._fetcher.get_index_price(inst_id)
+        return None
+
+    def get_open_interest(self, inst_id: str) -> Optional[Dict[str, Any]]:
+        if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
+            return self._fetcher.get_open_interest(inst_id)
+        return None
+
+    def get_funding_rate(self, inst_id: str) -> Optional[Dict[str, Any]]:
+        if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
+            return self._fetcher.get_funding_rate(inst_id)
         return None
 
     def get_candles(self, inst_id: str, timeframe: str, limit: int = 100):
         """获取K线（带计数）"""
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 return self._fetcher.get_candles(inst_id, timeframe, limit)
             except Exception as e:
                 print(f"[CachedDataFetcher] 获取K线失败 {inst_id}: {e}")
                 return []
         return []
 
+    def get_history_candles(self, inst_id: str, timeframe: str, **kwargs):
+        """获取历史 K 线（带限流控制）。"""
+        if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                max_candles = max(int(kwargs.get("max_candles", 300) or 300), 1)
+                estimated_calls = max(1, (max_candles + 299) // 300)
+                self._acquire_api_quota(estimated_calls)
+            return self._fetcher.get_history_candles(inst_id, timeframe, **kwargs)
+        return []
+
     def get_instruments(self, inst_type):
         """获取交易产品列表（带计数）"""
         if self._fetcher:
+            if self._requires_legacy_pre_acquire():
+                self._acquire_api_quota()
             try:
-                self._record_api_call()
                 return self._fetcher.get_instruments(inst_type)
             except Exception as e:
                 print(f"[CachedDataFetcher] 获取交易产品失败: {e}")
@@ -545,9 +627,9 @@ class CachedDataManager:
         return self._storage
 
     @property
-    def fetcher(self) -> Optional[DataFetcher]:
+    def fetcher(self) -> Optional[CachedDataFetcher]:
         if self._cached_fetcher:
-            return self._cached_fetcher.fetcher
+            return self._cached_fetcher
         return None
 
     def get_cache_stats(self) -> Dict[str, int]:
@@ -599,9 +681,6 @@ class CachedDataManager:
         manager = DataManager(self._storage, self.fetcher)
         try:
             result = action(manager)
-            api_calls = max(int(result.get("api_calls", 0)), 0)
-            if api_calls > 0:
-                get_rate_limiter().record_call(api_calls)
             if self._cached_fetcher:
                 self._cached_fetcher.mark_synced(inst_id, timeframe, inst_type=inst_type)
             self._invalidate_candle_cache(inst_id, timeframe, inst_type=inst_type)

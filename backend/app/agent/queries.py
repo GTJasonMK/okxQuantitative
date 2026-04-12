@@ -886,7 +886,18 @@ class AgentQueryService:
                 "asks": [],
             }
 
-        orderbook = fetcher.get_orderbook(request.inst_id, request.depth)
+        try:
+            orderbook = fetcher.get_orderbook(request.inst_id, request.depth)
+        except Exception as exc:
+            return {
+                "inst_id": request.inst_id,
+                "inst_type": _normalize_inst_type(request.inst_id, request.inst_type.value),
+                "available": False,
+                "message": f"获取盘口深度失败: {exc}",
+                "bids": [],
+                "asks": [],
+            }
+
         if not orderbook:
             return {
                 "inst_id": request.inst_id,

@@ -81,9 +81,16 @@
         <!-- K线图 + 买卖标注 -->
         <div class="kline-card card">
           <div class="kline-header">
-            <div class="kline-title">
-              <span v-if="result.strategyName">{{ result.strategyName }} · {{ result.symbol }} · {{ result.timeframe }}</span>
-              <span v-else class="kline-placeholder">运行回测后显示 K 线图</span>
+            <div class="kline-heading">
+              <div class="kline-title">
+                <span v-if="result.strategyName">{{ result.strategyName }} · {{ result.symbol }} · {{ result.timeframe }}</span>
+                <span v-else class="kline-placeholder">运行回测后显示 K 线图</span>
+              </div>
+              <div v-if="result.strategyName" class="kline-meta">
+                <span class="kline-meta-chip" :class="result.totalReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(result.totalReturn) }}</span>
+                <span class="kline-meta-chip">{{ result.totalTrades }} 笔交易</span>
+                <span class="kline-meta-chip">{{ result.durationDays }} 天区间</span>
+              </div>
             </div>
             <div class="kline-legend" v-if="result.strategyName">
               <span class="legend-item buy">▲ 买入</span>
@@ -156,167 +163,169 @@
               回测历史
             </button>
           </div>
+          <div class="bottom-card-body">
 
-          <!-- 交易记录 -->
-          <div v-if="bottomTab === 'trades'">
-            <div v-if="trades.length === 0" class="tab-empty">暂无交易记录</div>
-            <div v-else class="trades-wrapper">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>手续费</th><th>盈亏</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(trade, i) in trades.slice(-30)" :key="i">
-                    <td>{{ formatTime(trade.timestamp) }}</td>
-                    <td :class="trade.side === 'buy' ? 'price-up' : 'price-down'">{{ trade.side === 'buy' ? '▲ 买入' : '▼ 卖出' }}</td>
-                    <td>{{ formatPrice(trade.price) }}</td>
-                    <td>{{ safeNum(trade.quantity).toFixed(6) }}</td>
-                    <td>{{ formatMoney(trade.value) }}</td>
-                    <td>{{ formatMoney(trade.commission) }}</td>
-                    <td :class="(trade.pnl || 0) >= 0 ? 'price-up' : 'price-down'">{{ trade.pnl ? formatMoney(trade.pnl) : '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- 参数扫描 -->
-          <div v-if="bottomTab === 'scan'">
-            <div v-if="numericStrategyParams.length === 0" class="tab-empty">当前策略无可扫描的数值参数</div>
-            <div v-else class="scan-area">
-              <div class="scan-config">
-                <div class="config-item"><label>优化指标</label>
-                  <select v-model="scanConfig.metric" class="select select-sm">
-                    <option value="total_return">总收益率</option>
-                    <option value="sharpe_ratio">夏普比率</option>
-                    <option value="win_rate">胜率</option>
-                    <option value="max_drawdown">最大回撤</option>
-                  </select>
-                </div>
-                <div class="config-item"><label>X轴参数</label>
-                  <select v-model="scanConfig.xParam" class="select select-sm" @change="initScanParams">
-                    <option v-for="p in numericStrategyParams" :key="p.name" :value="p.name">{{ p.label || p.name }}</option>
-                  </select>
-                </div>
-                <div class="config-item"><label>X起</label><input v-model.number="scanConfig.xStart" class="input input-sm" type="number" /></div>
-                <div class="config-item"><label>X止</label><input v-model.number="scanConfig.xEnd" class="input input-sm" type="number" /></div>
-                <div class="config-item"><label>X步长</label><input v-model.number="scanConfig.xStep" class="input input-sm" type="number" /></div>
-                <template v-if="secondaryScanParams.length > 0">
-                  <div class="config-item"><label>Y轴参数</label>
-                    <select v-model="scanConfig.yParam" class="select select-sm">
-                      <option value="">不使用</option>
-                      <option v-for="p in secondaryScanParams" :key="p.name" :value="p.name">{{ p.label || p.name }}</option>
-                    </select>
-                  </div>
-                  <template v-if="scanConfig.yParam">
-                    <div class="config-item"><label>Y起</label><input v-model.number="scanConfig.yStart" class="input input-sm" type="number" /></div>
-                    <div class="config-item"><label>Y止</label><input v-model.number="scanConfig.yEnd" class="input input-sm" type="number" /></div>
-                    <div class="config-item"><label>Y步长</label><input v-model.number="scanConfig.yStep" class="input input-sm" type="number" /></div>
-                  </template>
-                </template>
-                <button class="btn btn-primary btn-sm" @click="runScan" :disabled="scanning || !config.strategy">{{ scanning ? '扫描中...' : '开始扫描' }}</button>
-              </div>
-              <div v-if="scanResult.results.length > 0">
-                <div ref="scanHeatmapRef" class="scan-heatmap"></div>
-                <table class="data-table" style="margin-top:12px">
-                  <thead><tr><th>排名</th><th>参数</th><th>{{ scanResult.metricLabel }}</th><th>收益率</th><th>夏普</th><th>回撤</th></tr></thead>
+            <!-- 交易记录 -->
+            <div v-if="bottomTab === 'trades'">
+              <div v-if="trades.length === 0" class="tab-empty">暂无交易记录</div>
+              <div v-else class="trades-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>手续费</th><th>盈亏</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    <tr v-for="(item, i) in scanResult.results.slice(0, 8)" :key="i">
-                      <td>#{{ i+1 }}</td>
-                      <td>{{ formatParams(item.params) }}</td>
-                      <td>{{ formatScanMetric(item.metrics?.[scanResult.metric]) }}</td>
-                      <td :class="item.metrics?.total_return >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.metrics?.total_return) }}</td>
-                      <td>{{ formatRatio(item.metrics?.sharpe_ratio) }}</td>
-                      <td class="price-down">{{ formatPercent(item.metrics?.max_drawdown) }}</td>
+                    <tr v-for="(trade, i) in trades.slice(-30)" :key="i">
+                      <td>{{ formatTime(trade.timestamp) }}</td>
+                      <td :class="trade.side === 'buy' ? 'price-up' : 'price-down'">{{ trade.side === 'buy' ? '▲ 买入' : '▼ 卖出' }}</td>
+                      <td>{{ formatPrice(trade.price) }}</td>
+                      <td>{{ safeNum(trade.quantity).toFixed(6) }}</td>
+                      <td>{{ formatMoney(trade.value) }}</td>
+                      <td>{{ formatMoney(trade.commission) }}</td>
+                      <td :class="(trade.pnl || 0) >= 0 ? 'price-up' : 'price-down'">{{ trade.pnl ? formatMoney(trade.pnl) : '-' }}</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
-          </div>
 
-          <!-- 回测历史 -->
-          <div v-if="bottomTab === 'history'">
-            <div v-if="loadingHistory" class="tab-empty">加载中...</div>
-            <div v-else-if="backtestHistory.length === 0" class="tab-empty">暂无历史记录</div>
-            <div v-else class="history-list">
-              <div
-                v-for="item in backtestHistory"
-                :key="item.id"
-                class="history-item"
-                :class="{ active: selectedHistoryId === item.id, compared: compareIds.includes(item.id) }"
-                @click="viewHistoryDetail(item)"
-              >
-                <div class="history-info">
-                  <div class="history-name-group">
-                    <span class="history-name">{{ item.strategy_name }}</span>
-                    <span v-if="selectedHistoryId === item.id" class="history-flag">当前查看</span>
-                    <span v-if="compareIds.includes(item.id)" class="history-flag history-flag-compare">对比中</span>
+            <!-- 参数扫描 -->
+            <div v-if="bottomTab === 'scan'">
+              <div v-if="numericStrategyParams.length === 0" class="tab-empty">当前策略无可扫描的数值参数</div>
+              <div v-else class="scan-area">
+                <div class="scan-config">
+                  <div class="config-item"><label>优化指标</label>
+                    <select v-model="scanConfig.metric" class="select select-sm">
+                      <option value="total_return">总收益率</option>
+                      <option value="sharpe_ratio">夏普比率</option>
+                      <option value="win_rate">胜率</option>
+                      <option value="max_drawdown">最大回撤</option>
+                    </select>
                   </div>
-                  <span class="history-symbol">{{ item.symbol }}</span>
-                  <span class="history-time">{{ formatDateTime(item.created_at) }}</span>
+                  <div class="config-item"><label>X轴参数</label>
+                    <select v-model="scanConfig.xParam" class="select select-sm" @change="initScanParams">
+                      <option v-for="p in numericStrategyParams" :key="p.name" :value="p.name">{{ p.label || p.name }}</option>
+                    </select>
+                  </div>
+                  <div class="config-item"><label>X起</label><input v-model.number="scanConfig.xStart" class="input input-sm" type="number" /></div>
+                  <div class="config-item"><label>X止</label><input v-model.number="scanConfig.xEnd" class="input input-sm" type="number" /></div>
+                  <div class="config-item"><label>X步长</label><input v-model.number="scanConfig.xStep" class="input input-sm" type="number" /></div>
+                  <template v-if="secondaryScanParams.length > 0">
+                    <div class="config-item"><label>Y轴参数</label>
+                      <select v-model="scanConfig.yParam" class="select select-sm">
+                        <option value="">不使用</option>
+                        <option v-for="p in secondaryScanParams" :key="p.name" :value="p.name">{{ p.label || p.name }}</option>
+                      </select>
+                    </div>
+                    <template v-if="scanConfig.yParam">
+                      <div class="config-item"><label>Y起</label><input v-model.number="scanConfig.yStart" class="input input-sm" type="number" /></div>
+                      <div class="config-item"><label>Y止</label><input v-model.number="scanConfig.yEnd" class="input input-sm" type="number" /></div>
+                      <div class="config-item"><label>Y步长</label><input v-model.number="scanConfig.yStep" class="input input-sm" type="number" /></div>
+                    </template>
+                  </template>
+                  <button class="btn btn-primary btn-sm" @click="runScan" :disabled="scanning || !config.strategy">{{ scanning ? '扫描中...' : '开始扫描' }}</button>
                 </div>
-                <div class="history-stats">
-                  <span :class="item.total_return >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.total_return) }}</span>
-                  <span class="history-trades">{{ item.total_trades }}笔</span>
-                  <label class="compare-toggle" @click.stop>
-                    <input type="checkbox" :checked="compareIds.includes(item.id)" @change="toggleCompareItem(item)" />
-                    对比
-                  </label>
-                  <button class="btn-delete" @click.stop="deleteHistoryItem(item.id)">×</button>
-                </div>
-              </div>
-              <div v-if="compareResults.length > 1" class="compare-section">
-                <h4>对比曲线</h4>
-                <div class="compare-toolbar">
-                  <span class="toolbar-label">曲线模式</span>
-                  <button
-                    class="toolbar-chip"
-                    :class="{ active: compareScaleMode === 'normalized' }"
-                    @click="compareScaleMode = 'normalized'"
-                  >
-                    归一化收益
-                  </button>
-                  <button
-                    class="toolbar-chip"
-                    :class="{ active: compareScaleMode === 'equity' }"
-                    @click="compareScaleMode = 'equity'"
-                  >
-                    原始权益
-                  </button>
-                </div>
-                <div class="compare-summary-table">
-                  <table class="data-table compare-table">
-                    <thead>
-                      <tr>
-                        <th>结果</th>
-                        <th>参数</th>
-                        <th>收益率</th>
-                        <th>夏普</th>
-                        <th>回撤</th>
-                        <th>胜率</th>
-                        <th>交易数</th>
-                      </tr>
-                    </thead>
+                <div v-if="scanResult.results.length > 0">
+                  <div ref="scanHeatmapRef" class="scan-heatmap"></div>
+                  <table class="data-table" style="margin-top:12px">
+                    <thead><tr><th>排名</th><th>参数</th><th>{{ scanResult.metricLabel }}</th><th>收益率</th><th>夏普</th><th>回撤</th></tr></thead>
                     <tbody>
-                      <tr v-for="item in compareResults" :key="`compare-${item.id}`">
-                        <td>
-                          <div class="compare-name">{{ item.strategyName }}</div>
-                          <div class="compare-subline">{{ item.symbol }} · {{ item.timeframe }}</div>
-                        </td>
+                      <tr v-for="(item, i) in scanResult.results.slice(0, 8)" :key="i">
+                        <td>#{{ i+1 }}</td>
                         <td>{{ formatParams(item.params) }}</td>
-                        <td :class="item.totalReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.totalReturn) }}</td>
-                        <td>{{ formatRatio(item.sharpeRatio) }}</td>
-                        <td class="price-down">{{ formatPercent(item.maxDrawdown) }}</td>
-                        <td :class="item.winRate >= 50 ? 'price-up' : 'price-down'">{{ formatPercent(item.winRate) }}</td>
-                        <td>{{ item.totalTrades }}</td>
+                        <td>{{ formatScanMetric(item.metrics?.[scanResult.metric]) }}</td>
+                        <td :class="item.metrics?.total_return >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.metrics?.total_return) }}</td>
+                        <td>{{ formatRatio(item.metrics?.sharpe_ratio) }}</td>
+                        <td class="price-down">{{ formatPercent(item.metrics?.max_drawdown) }}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <div ref="compareChartRef" class="compare-chart"></div>
+              </div>
+            </div>
+
+            <!-- 回测历史 -->
+            <div v-if="bottomTab === 'history'">
+              <div v-if="loadingHistory" class="tab-empty">加载中...</div>
+              <div v-else-if="backtestHistory.length === 0" class="tab-empty">暂无历史记录</div>
+              <div v-else class="history-list">
+                <div
+                  v-for="item in backtestHistory"
+                  :key="item.id"
+                  class="history-item"
+                  :class="{ active: selectedHistoryId === item.id, compared: compareIds.includes(item.id) }"
+                  @click="viewHistoryDetail(item)"
+                >
+                  <div class="history-info">
+                    <div class="history-name-group">
+                      <span class="history-name">{{ item.strategy_name }}</span>
+                      <span v-if="selectedHistoryId === item.id" class="history-flag">当前查看</span>
+                      <span v-if="compareIds.includes(item.id)" class="history-flag history-flag-compare">对比中</span>
+                    </div>
+                    <span class="history-symbol">{{ item.symbol }}</span>
+                    <span class="history-time">{{ formatDateTime(item.created_at) }}</span>
+                  </div>
+                  <div class="history-stats">
+                    <span :class="item.total_return >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.total_return) }}</span>
+                    <span class="history-trades">{{ item.total_trades }}笔</span>
+                    <label class="compare-toggle" @click.stop>
+                      <input type="checkbox" :checked="compareIds.includes(item.id)" @change="toggleCompareItem(item)" />
+                      对比
+                    </label>
+                    <button class="btn-delete" @click.stop="deleteHistoryItem(item.id)">×</button>
+                  </div>
+                </div>
+                <div v-if="compareResults.length > 1" class="compare-section">
+                  <h4>对比曲线</h4>
+                  <div class="compare-toolbar">
+                    <span class="toolbar-label">曲线模式</span>
+                    <button
+                      class="toolbar-chip"
+                      :class="{ active: compareScaleMode === 'normalized' }"
+                      @click="compareScaleMode = 'normalized'"
+                    >
+                      归一化收益
+                    </button>
+                    <button
+                      class="toolbar-chip"
+                      :class="{ active: compareScaleMode === 'equity' }"
+                      @click="compareScaleMode = 'equity'"
+                    >
+                      原始权益
+                    </button>
+                  </div>
+                  <div class="compare-summary-table">
+                    <table class="data-table compare-table">
+                      <thead>
+                        <tr>
+                          <th>结果</th>
+                          <th>参数</th>
+                          <th>收益率</th>
+                          <th>夏普</th>
+                          <th>回撤</th>
+                          <th>胜率</th>
+                          <th>交易数</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="item in compareResults" :key="`compare-${item.id}`">
+                          <td>
+                            <div class="compare-name">{{ item.strategyName }}</div>
+                            <div class="compare-subline">{{ item.symbol }} · {{ item.timeframe }}</div>
+                          </td>
+                          <td>{{ formatParams(item.params) }}</td>
+                          <td :class="item.totalReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(item.totalReturn) }}</td>
+                          <td>{{ formatRatio(item.sharpeRatio) }}</td>
+                          <td class="price-down">{{ formatPercent(item.maxDrawdown) }}</td>
+                          <td :class="item.winRate >= 50 ? 'price-up' : 'price-down'">{{ formatPercent(item.winRate) }}</td>
+                          <td>{{ item.totalTrades }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div ref="compareChartRef" class="compare-chart"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -325,36 +334,106 @@
 
       <!-- 右侧：统计面板 -->
       <div class="stats-panel" v-if="result.strategyName">
+        <div class="stats-overview card">
+          <div class="stat-section-title">回测概览</div>
+          <div class="stats-overview-grid">
+            <div class="metric-tile">
+              <span class="metric-tile-label">总收益率</span>
+              <strong class="metric-tile-value" :class="result.totalReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(result.totalReturn) }}</strong>
+            </div>
+            <div class="metric-tile">
+              <span class="metric-tile-label">最大回撤</span>
+              <strong class="metric-tile-value price-down">{{ formatPercent(result.maxDrawdown) }}</strong>
+            </div>
+            <div class="metric-tile">
+              <span class="metric-tile-label">夏普比率</span>
+              <strong class="metric-tile-value">{{ formatRatio(result.sharpeRatio) }}</strong>
+            </div>
+            <div class="metric-tile">
+              <span class="metric-tile-label">胜率</span>
+              <strong class="metric-tile-value" :class="result.winRate >= 50 ? 'price-up' : 'price-down'">{{ formatPercent(result.winRate) }}</strong>
+            </div>
+          </div>
+        </div>
         <div class="stat-section card">
           <h4 class="stat-section-title">收益</h4>
-          <div class="stat-row"><span>总收益率</span><strong :class="result.totalReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(result.totalReturn) }}</strong></div>
-          <div class="stat-row"><span>年化收益</span><strong :class="result.annualReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(result.annualReturn) }}</strong></div>
-          <div class="stat-row"><span>初始资金</span><strong>{{ formatMoney(result.initialCapital) }}</strong></div>
-          <div class="stat-row"><span>最终资金</span><strong :class="result.finalCapital >= result.initialCapital ? 'price-up' : 'price-down'">{{ formatMoney(result.finalCapital) }}</strong></div>
-          <div class="stat-row"><span>手续费</span><strong>{{ formatMoney(result.totalCommission) }}</strong></div>
+          <div class="stat-metric-grid">
+            <div class="stat-metric">
+              <span>年化收益</span>
+              <strong :class="result.annualReturn >= 0 ? 'price-up' : 'price-down'">{{ formatPercent(result.annualReturn) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>初始资金</span>
+              <strong>{{ formatMoney(result.initialCapital) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>最终资金</span>
+              <strong :class="result.finalCapital >= result.initialCapital ? 'price-up' : 'price-down'">{{ formatMoney(result.finalCapital) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>手续费</span>
+              <strong>{{ formatMoney(result.totalCommission) }}</strong>
+            </div>
+          </div>
         </div>
         <div class="stat-section card">
           <h4 class="stat-section-title">风险</h4>
-          <div class="stat-row"><span>最大回撤</span><strong class="price-down">{{ formatPercent(result.maxDrawdown) }}</strong></div>
-          <div class="stat-row"><span>夏普比率</span><strong>{{ formatRatio(result.sharpeRatio) }}</strong></div>
-          <div class="stat-row"><span>索提诺</span><strong>{{ formatRatio(result.sortinoRatio) }}</strong></div>
-          <div class="stat-row"><span>卡玛比率</span><strong>{{ formatRatio(result.calmarRatio) }}</strong></div>
+          <div class="stat-metric-grid">
+            <div class="stat-metric">
+              <span>索提诺</span>
+              <strong>{{ formatRatio(result.sortinoRatio) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>卡玛比率</span>
+              <strong>{{ formatRatio(result.calmarRatio) }}</strong>
+            </div>
+          </div>
         </div>
         <div class="stat-section card">
           <h4 class="stat-section-title">交易</h4>
-          <div class="stat-row"><span>总交易</span><strong>{{ result.totalTrades }}</strong></div>
-          <div class="stat-row"><span>盈利</span><strong class="price-up">{{ result.winningTrades }}</strong></div>
-          <div class="stat-row"><span>亏损</span><strong class="price-down">{{ result.losingTrades }}</strong></div>
-          <div class="stat-row"><span>胜率</span><strong :class="result.winRate >= 50 ? 'price-up' : 'price-down'">{{ formatPercent(result.winRate) }}</strong></div>
-          <div class="stat-row"><span>盈亏比</span><strong>{{ formatRatio(result.profitFactor) }}</strong></div>
-          <div class="stat-row"><span>平均盈利</span><strong class="price-up">{{ formatMoney(result.avgProfit) }}</strong></div>
-          <div class="stat-row"><span>平均亏损</span><strong class="price-down">{{ formatMoney(result.avgLoss) }}</strong></div>
+          <div class="stat-metric-grid">
+            <div class="stat-metric">
+              <span>总交易</span>
+              <strong>{{ result.totalTrades }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>盈利</span>
+              <strong class="price-up">{{ result.winningTrades }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>亏损</span>
+              <strong class="price-down">{{ result.losingTrades }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>盈亏比</span>
+              <strong>{{ formatRatio(result.profitFactor) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>平均盈利</span>
+              <strong class="price-up">{{ formatMoney(result.avgProfit) }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>平均亏损</span>
+              <strong class="price-down">{{ formatMoney(result.avgLoss) }}</strong>
+            </div>
+          </div>
         </div>
         <div class="stat-section card">
           <h4 class="stat-section-title">周期</h4>
-          <div class="stat-row"><span>开始</span><strong>{{ result.startTime ? result.startTime.slice(0,10) : '-' }}</strong></div>
-          <div class="stat-row"><span>结束</span><strong>{{ result.endTime ? result.endTime.slice(0,10) : '-' }}</strong></div>
-          <div class="stat-row"><span>天数</span><strong>{{ result.durationDays }}</strong></div>
+          <div class="stat-metric-grid stat-metric-grid-compact">
+            <div class="stat-metric">
+              <span>开始</span>
+              <strong>{{ result.startTime ? result.startTime.slice(0,10) : '-' }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>结束</span>
+              <strong>{{ result.endTime ? result.endTime.slice(0,10) : '-' }}</strong>
+            </div>
+            <div class="stat-metric">
+              <span>天数</span>
+              <strong>{{ result.durationDays }}</strong>
+            </div>
+          </div>
         </div>
         <div class="stat-section card" v-if="overlayIndicatorOptions.length > 0 || secondaryIndicatorOptions.length > 0">
           <h4 class="stat-section-title">图表指标</h4>
@@ -490,26 +569,11 @@ const PRIMARY_OVERLAY_ORDER = [
 
 const SECONDARY_PANEL_ORDER = ['macd', 'rsi', 'kdj', 'bandwidth'];
 
-const PRICE_UP_COLOR = 'var(--candle-up)';
-const PRICE_DOWN_COLOR = 'var(--candle-down)';
-const PRICE_UP_SOFT = 'rgba(34, 197, 94, 0.18)';
-const PRICE_DOWN_SOFT = 'rgba(239, 68, 68, 0.18)';
-const DEFAULT_TEXT = 'var(--text-primary)';
-const MUTED_TEXT = 'var(--text-secondary)';
-const GRID_COLOR = 'rgba(255, 255, 255, 0.08)';
-const SURFACE_BG = 'rgba(15, 17, 21, 0.96)';
-const VOLUME_UP = 'rgba(34, 197, 94, 0.65)';
-const VOLUME_DOWN = 'rgba(239, 68, 68, 0.65)';
 
 const klineChartRef = ref(null);
 const equityChartRef = ref(null);
 const scanHeatmapRef = ref(null);
 const compareChartRef = ref(null);
-
-let klineChart = null;
-let equityChart = null;
-let scanHeatmapChart = null;
-let compareChart = null;
 
 const loadingSymbols = ref(false);
 const loadingStrategies = ref(false);
@@ -602,7 +666,6 @@ const {
   buildScanValues,
   syncIndicatorSelections,
   toggleOverlayIndicator,
-  getActiveSecondaryMeta,
   formatPrice,
   formatMoney,
   formatPercent,
@@ -614,11 +677,6 @@ const {
   formatScanMetric,
   formatMetadataValue,
   getTradeMetadataEntries,
-  buildTradeTooltipHtml,
-  getTradeIndexByTimestamp,
-  ensureChartInstance,
-  buildTradeScatterSeries,
-  buildSecondarySeries,
 } = useBacktestViewUtils({
   config,
   result,
@@ -636,8 +694,6 @@ const {
   INDICATOR_COLORS,
   PRIMARY_OVERLAY_ORDER,
   SECONDARY_PANEL_ORDER,
-  PRICE_UP_COLOR,
-  PRICE_DOWN_COLOR,
 });
 const {
   healthStatus: backtestHealthStatus,
@@ -647,7 +703,35 @@ const {
   symbolRef: computed(() => config.symbol),
   instTypeRef: computed(() => config.instType),
 });
-const { renderKlineChart, renderEquityChart, renderScanHeatmap, renderCompareChart, renderAllCharts } = useBacktestViewCharts({ klineChartRef, equityChartRef, scanHeatmapRef, compareChartRef, candles, config, activeOverlayIndicators, overlayIndicatorOptions, activeSecondaryIndicator, secondaryIndicatorOptions, trades, indicatorMap, scanResult, compareResults, compareScaleMode, result, equityCurve, bottomTab, formatAxisTime, formatDateTime, formatPrice, formatMoney, safeNum, getIndicatorColor, ensureChartInstance, buildTradeTooltipHtml, getTradeIndexByTimestamp, buildTradeScatterSeries, getActiveSecondaryMeta, buildSecondarySeries, PRICE_UP_COLOR, PRICE_DOWN_COLOR, DEFAULT_TEXT, MUTED_TEXT, GRID_COLOR, SURFACE_BG, VOLUME_UP, VOLUME_DOWN });
+const {
+  renderKlineChart,
+  renderEquityChart,
+  renderScanHeatmap,
+  renderCompareChart,
+  renderAllCharts,
+  resizeAllCharts,
+  disposeAllCharts,
+} = useBacktestViewCharts({
+  klineChartRef,
+  equityChartRef,
+  scanHeatmapRef,
+  compareChartRef,
+  candles,
+  config,
+  activeOverlayIndicators,
+  overlayIndicatorOptions,
+  trades,
+  scanResult,
+  compareResults,
+  compareScaleMode,
+  equityCurve,
+  bottomTab,
+  formatDateTime,
+  formatMoney,
+  formatScanMetric,
+  safeNum,
+  getIndicatorColor,
+});
 
 function createEmptyResult() {
   return {
@@ -1001,13 +1085,6 @@ async function deleteHistoryItem(resultId) {
   }
 }
 
-function resizeCharts() {
-  klineChart?.resize();
-  equityChart?.resize();
-  scanHeatmapChart?.resize();
-  compareChart?.resize();
-}
-
 watch(() => config.instType, () => {
   ensureSelectedSymbol();
 });
@@ -1060,19 +1137,12 @@ onMounted(async () => {
 
   syncIndicatorSelections(false);
 
-  window.addEventListener('resize', resizeCharts);
+  window.addEventListener('resize', resizeAllCharts);
 });
 
 onUnmounted(() => {
-  window.removeEventListener('resize', resizeCharts);
-  klineChart?.dispose();
-  equityChart?.dispose();
-  scanHeatmapChart?.dispose();
-  compareChart?.dispose();
-  klineChart = null;
-  equityChart = null;
-  scanHeatmapChart = null;
-  compareChart = null;
+  window.removeEventListener('resize', resizeAllCharts);
+  disposeAllCharts();
 });
 </script>
 <style scoped src="../assets/styles/views/backtest-view.css"></style>

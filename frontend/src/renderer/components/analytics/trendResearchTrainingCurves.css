@@ -1,0 +1,12 @@
+.trend-training-curves {
+  min-height: 240px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.trend-training-curve-host {
+  width: 100%;
+  min-height: 220px;
+}

@@ -371,7 +371,10 @@ export function useMarketViewSync(deps) {
         applyRealtimeTickerToCandles(symbol, tickers[symbol]);
       }
       updateChart(symbol);
-      chartInstances[symbol]?.resize();
+      // LWC 通过 ResizeObserver 自动 resize，ECharts 需手动调用
+      if (typeof chartInstances[symbol]?.resize === 'function') {
+        chartInstances[symbol].resize();
+      }
     } else {
       loadChartData(symbol);
     }

@@ -1,0 +1,5 @@
+{"type":"click","text":"B\n    \n      价格结构再拆分\n      把“动量”和“波动/效率”拆成两图，读起来更干净，但会变成 7 图。","choice":"split-price-structure","id":null,"timestamp":1775528275582}
+{"type":"click","text":"A\n    \n      保留 6 图\n      信息最完整，总览图允许重复展示核心因子。","choice":"keep-6","id":null,"timestamp":1775528297790}
+{"type":"click","text":"B\n    \n      价格结构再拆分\n      把“动量”和“波动/效率”拆成两图，读起来更干净，但会变成 7 图。","choice":"split-price-structure","id":null,"timestamp":1775528299254}
+{"type":"click","text":"B\n    \n      价格结构再拆分\n      把“动量”和“波动/效率”拆成两图，读起来更干净，但会变成 7 图。","choice":"split-price-structure","id":null,"timestamp":1775528312602}
+{"type":"click","text":"A\n    \n      保留 6 图\n      信息最完整，总览图允许重复展示核心因子。","choice":"keep-6","id":null,"timestamp":1775528313881}

@@ -4,18 +4,29 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
-import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
 
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+let monacoRuntimePromise = null;
 
-if (!globalThis.MonacoEnvironment) {
-  globalThis.MonacoEnvironment = {
-    getWorker() {
-      return new editorWorker();
-    },
-  };
-}
+const loadMonacoRuntime = async () => {
+  if (!monacoRuntimePromise) {
+    monacoRuntimePromise = Promise.all([
+      import('monaco-editor/esm/vs/editor/editor.api'),
+      import('monaco-editor/esm/vs/basic-languages/python/python.contribution'),
+      import('monaco-editor/esm/vs/editor/editor.worker?worker'),
+    ]).then(([monacoModule, _pythonContribution, workerModule]) => {
+      const EditorWorker = workerModule.default;
+      if (!globalThis.MonacoEnvironment) {
+        globalThis.MonacoEnvironment = {
+          getWorker() {
+            return new EditorWorker();
+          },
+        };
+      }
+      return monacoModule;
+    });
+  }
+  return monacoRuntimePromise;
+};
 
 const props = defineProps({
   modelValue: {
@@ -44,7 +55,9 @@ const emit = defineEmits(['update:modelValue', 'ready']);
 
 const containerRef = ref(null);
 let editor = null;
+let monacoApi = null;
 let suppressEmit = false;
+let unmounted = false;
 
 const buildEditorOptions = () => ({
   value: props.modelValue || '',
@@ -61,10 +74,11 @@ const buildEditorOptions = () => ({
   ...props.options,
 });
 
-onMounted(() => {
-  if (!containerRef.value) return;
+onMounted(async () => {
+  monacoApi = await loadMonacoRuntime();
+  if (!containerRef.value || unmounted) return;
 
-  editor = monaco.editor.create(containerRef.value, buildEditorOptions());
+  editor = monacoApi.editor.create(containerRef.value, buildEditorOptions());
   editor.onDidChangeModelContent(() => {
     if (suppressEmit) return;
     emit('update:modelValue', editor.getValue());
@@ -93,8 +107,8 @@ watch(
   () => props.language,
   (value) => {
     const model = editor?.getModel();
-    if (model && value) {
-      monaco.editor.setModelLanguage(model, value);
+    if (model && value && monacoApi?.editor) {
+      monacoApi.editor.setModelLanguage(model, value);
     }
   }
 );
@@ -102,13 +116,14 @@ watch(
 watch(
   () => props.theme,
   (value) => {
-    if (value) {
-      monaco.editor.setTheme(value);
+    if (value && monacoApi?.editor) {
+      monacoApi.editor.setTheme(value);
     }
   }
 );
 
 onBeforeUnmount(() => {
+  unmounted = true;
   editor?.dispose();
 });
 </script>

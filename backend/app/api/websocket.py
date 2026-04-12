@@ -8,8 +8,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from .deps import get_ctx
+from .trend_diagnostics_stream import TrendDiagnosticsSnapshotPump
 from ..core.data_fetcher import Candle
 from ..core.assistant_patrol import get_assistant_patrol
+from ..core.trend_research.diagnostics_realtime import (
+    build_diagnostics_snapshot_event,
+    build_diagnostics_ws_message,
+)
 from ..core.websocket_manager import TickerData, CandleData
 from ..core.price_alerts import price_alert_store
 from ..utils.mode import coerce_mode, mode_from_bool
@@ -53,7 +58,7 @@ class ConnectionManager:
     WebSocket 连接管理器
 
     管理所有前端 WebSocket 客户端连接，并转发 OKX 数据
-    支持: ticker(行情), candle(K线), account(账户), order(订单), fill(成交)
+    支持: ticker(行情), candle(K线), account(账户), order(订单), fill(成交), trend_research, trend_diagnostics
     """
 
     def __init__(self):
@@ -71,6 +76,17 @@ class ConnectionManager:
         self._ticker_ref_count: Dict[str, int] = {}
         # 全局 K 线订阅引用计数: inst_id|timeframe -> 订阅客户端数量
         self._candle_ref_count: Dict[str, int] = {}
+        # 私有通道引用计数（按 mode 聚合）：mode -> 订阅私有数据的客户端数量
+        self._private_ref_count: Dict[str, int] = {}
+        # 趋势研究广播合并：高频事件下只保留最新快照，避免广播任务风暴
+        self._trend_research_broadcast_task: Optional[asyncio.Task] = None
+        self._trend_research_broadcast_loop = None
+        self._trend_research_pending_payload: Optional[Dict[str, Any]] = None
+        self._trend_diagnostics_snapshot_pump = TrendDiagnosticsSnapshotPump(
+            list_subscribers=self._list_trend_diagnostics_subscribers,
+            send_snapshot=self._send_trend_diagnostics_snapshot,
+            disconnect=self.disconnect,
+        )
 
     def _get_private_setup_lock(self) -> asyncio.Lock:
         """获取与当前事件循环绑定的私有 WS 初始化锁"""
@@ -91,6 +107,12 @@ class ConnectionManager:
             "fills": False,         # 是否订阅成交
             "alerts": False,        # 是否订阅价格提醒
             "assistant_patrol": False,  # 是否订阅主动巡检机会
+            "trend_research": False,  # 是否订阅趋势研究实时推送
+            "trend_diagnostics": {
+                "active": False,
+                "inst_id": "",
+                "timeline_limit": 40,
+            },
             "mode": None,           # 私有数据期望模式(simulated/live)，用于路由到对应 OKX 私有 WS
         }
         print(f"[WS] 新客户端连接，当前连接数: {len(self._connections)}")
@@ -104,6 +126,8 @@ class ConnectionManager:
         if websocket in self._connections:
             # 清理该客户端的订阅引用计数
             subs = self._connections[websocket]
+            had_private_subscription = self._has_private_subscription(subs)
+            private_mode = self._normalize_mode(subs.get("mode")) if had_private_subscription else None
             to_unsubscribe = []
             to_unsubscribe_candles = []
             for inst_id in subs["tickers"]:
@@ -123,6 +147,8 @@ class ConnectionManager:
                 asyncio.create_task(okx_manager.unsubscribe_tickers(to_unsubscribe))
             if to_unsubscribe_candles and okx_manager.is_business_running:
                 asyncio.create_task(okx_manager.unsubscribe_candles(to_unsubscribe_candles))
+            if private_mode and self._decrement_private_ref(private_mode) == 0:
+                asyncio.create_task(get_ctx().stop_private_ws(private_mode))
         print(f"[WS] 客户端断开，当前连接数: {len(self._connections)}")
 
     def _increment_ticker_ref(self, inst_id: str):
@@ -152,6 +178,27 @@ class ConnectionManager:
                 return 0
             return self._candle_ref_count[candle_key]
         return 0
+
+    def _has_private_subscription(self, subs: Dict[str, Any]) -> bool:
+        """判断连接是否订阅了任一私有通道。"""
+        return bool(subs.get("account") or subs.get("orders") or subs.get("fills"))
+
+    def _increment_private_ref(self, mode: str):
+        """增加指定 mode 的私有通道引用计数。"""
+        normalized_mode = self._normalize_mode(mode)
+        self._private_ref_count[normalized_mode] = self._private_ref_count.get(normalized_mode, 0) + 1
+
+    def _decrement_private_ref(self, mode: str):
+        """减少指定 mode 的私有通道引用计数，返回剩余计数。"""
+        normalized_mode = self._normalize_mode(mode)
+        if normalized_mode not in self._private_ref_count:
+            return 0
+
+        self._private_ref_count[normalized_mode] -= 1
+        if self._private_ref_count[normalized_mode] <= 0:
+            del self._private_ref_count[normalized_mode]
+            return 0
+        return self._private_ref_count[normalized_mode]
 
     async def _setup_callbacks(self):
         """设置 OKX 公共 WS 回调（ticker/candle）"""
@@ -396,6 +443,106 @@ class ConnectionManager:
             filter_fn=lambda subs: subs["assistant_patrol"],
         )
 
+    async def _broadcast_trend_research(self, payload: Dict[str, Any]):
+        """广播趋势研究实时快照。"""
+        message = json.dumps({
+            "type": "trend_research",
+            "data": payload,
+        }, ensure_ascii=False)
+        await self._send_to_subscribers(
+            message,
+            filter_fn=lambda subs: subs["trend_research"],
+        )
+
+    async def _broadcast_trend_diagnostics(self, payload: Dict[str, Any]):
+        """广播趋势诊断实时事件。"""
+        await self._broadcast_to_subscribers(
+            build_diagnostics_ws_message(payload),
+            filter_fn=lambda subs: (
+                subs["trend_diagnostics"]["active"]
+                and (
+                    not subs["trend_diagnostics"]["inst_id"]
+                    or subs["trend_diagnostics"]["inst_id"] == payload.get("inst_id")
+                    or payload.get("event_type") == "snapshot"
+                )
+            ),
+        )
+
+    def _list_trend_diagnostics_subscribers(self) -> list[tuple[WebSocket, str, int]]:
+        subscribers = []
+        for websocket, subs in list(self._connections.items()):
+            diagnostics = subs["trend_diagnostics"]
+            if not diagnostics["active"]:
+                continue
+            subscribers.append(
+                (
+                    websocket,
+                    str(diagnostics["inst_id"] or ""),
+                    max(int(diagnostics["timeline_limit"] or 40), 5),
+                )
+            )
+        return subscribers
+
+    def _build_trend_diagnostics_snapshot_message(self, *, inst_id: str, timeline_limit: int) -> str:
+        snapshot = get_ctx().trend_research().build_diagnostics_snapshot(
+            inst_id=inst_id or None,
+            timeline_limit=timeline_limit,
+        )
+        return json.dumps(
+            build_diagnostics_ws_message(build_diagnostics_snapshot_event(snapshot)),
+            ensure_ascii=False,
+        )
+
+    async def _send_trend_diagnostics_snapshot(self, websocket: WebSocket, inst_id: str, timeline_limit: int):
+        if websocket.client_state != WebSocketState.CONNECTED:
+            raise RuntimeError("trend diagnostics websocket is disconnected")
+        await websocket.send_text(
+            self._build_trend_diagnostics_snapshot_message(
+                inst_id=inst_id,
+                timeline_limit=timeline_limit,
+            )
+        )
+
+    async def _broadcast_trend_diagnostics_snapshots_once(self):
+        await self._trend_diagnostics_snapshot_pump.broadcast_once()
+
+    def _ensure_trend_research_broadcast_state(self) -> None:
+        """按当前事件循环重置趋势研究广播状态，避免跨 loop 复用旧 task。"""
+        loop = asyncio.get_running_loop()
+        if self._trend_research_broadcast_loop is loop:
+            return
+        self._trend_research_broadcast_loop = loop
+        self._trend_research_broadcast_task = None
+        self._trend_research_pending_payload = None
+
+    def schedule_trend_research_broadcast(self, payload: Dict[str, Any]) -> None:
+        """只保留最新趋势研究快照，避免高频更新时堆积并发广播任务。"""
+        self._ensure_trend_research_broadcast_state()
+        self._trend_research_pending_payload = payload
+        task = self._trend_research_broadcast_task
+        if task is not None and not task.done():
+            return
+        self._trend_research_broadcast_task = asyncio.create_task(
+            self._drain_trend_research_broadcasts(),
+            name="trend_research_broadcast",
+        )
+
+    async def _drain_trend_research_broadcasts(self) -> None:
+        """串行发送趋势研究快照；广播期间新数据到达时仅继续发送最新一份。"""
+        try:
+            while True:
+                payload = self._trend_research_pending_payload
+                self._trend_research_pending_payload = None
+                if payload is None:
+                    return
+                await self._broadcast_trend_research(payload)
+                if self._trend_research_pending_payload is None:
+                    return
+        finally:
+            current_task = asyncio.current_task()
+            if self._trend_research_broadcast_task is current_task:
+                self._trend_research_broadcast_task = None
+
     async def _send_to_subscribers(self, message: str, filter_fn):
         """发送消息给符合条件的客户端"""
         disconnected = []
@@ -412,6 +559,12 @@ class ConnectionManager:
         for ws in disconnected:
             self.disconnect(ws)
 
+    async def _broadcast_to_subscribers(self, message: Dict[str, Any], filter_fn):
+        await self._send_to_subscribers(
+            json.dumps(message, ensure_ascii=False),
+            filter_fn=filter_fn,
+        )
+
     # ==================== 订阅管理 ====================
 
     async def handle_subscribe(self, websocket: WebSocket, message: Dict):
@@ -420,6 +573,8 @@ class ConnectionManager:
             return
 
         subs = self._connections[websocket]
+        had_private_subscription = self._has_private_subscription(subs)
+        previous_private_mode = self._normalize_mode(subs.get("mode")) if had_private_subscription else None
         channels = message.get("channels", [])
         instruments = message.get("instruments", [])
         candle_timeframes = message.get("timeframes", [])
@@ -429,7 +584,15 @@ class ConnectionManager:
 
         # 私有通道订阅：需要按 mode 启动对应的 OKX 私有 WS
         if any(ch in ("account", "orders", "fills") for ch in channels):
-            subs["mode"] = self._normalize_mode(requested_mode)
+            next_private_mode = self._normalize_mode(requested_mode)
+            if had_private_subscription and previous_private_mode != next_private_mode:
+                if self._decrement_private_ref(previous_private_mode) == 0:
+                    await get_ctx().stop_private_ws(previous_private_mode)
+                self._increment_private_ref(next_private_mode)
+            elif not had_private_subscription:
+                self._increment_private_ref(next_private_mode)
+
+            subs["mode"] = next_private_mode
             await self._ensure_private_ws(subs["mode"])
 
         for channel in channels:
@@ -476,6 +639,23 @@ class ConnectionManager:
                 subs["alerts"] = True
             elif channel == "assistant_patrol":
                 subs["assistant_patrol"] = True
+            elif channel == "trend_research":
+                subs["trend_research"] = True
+            elif channel == "trend_diagnostics":
+                inst_id = str(message.get("inst_id") or "")
+                timeline_limit = max(int(message.get("timeline_limit") or 40), 5)
+                subs["trend_diagnostics"] = {
+                    "active": True,
+                    "inst_id": inst_id,
+                    "timeline_limit": timeline_limit,
+                }
+                await websocket.send_text(
+                    self._build_trend_diagnostics_snapshot_message(
+                        inst_id=inst_id,
+                        timeline_limit=timeline_limit,
+                    )
+                )
+                self._trend_diagnostics_snapshot_pump.ensure_running()
 
         # 兼容旧格式: {"action": "subscribe", "instruments": [...]}
         if not channels and instruments:
@@ -494,6 +674,8 @@ class ConnectionManager:
             return
 
         subs = self._connections[websocket]
+        had_private_subscription = self._has_private_subscription(subs)
+        private_mode = self._normalize_mode(subs.get("mode")) if had_private_subscription else None
         channels = message.get("channels", [])
         instruments = message.get("instruments", [])
         candle_timeframes = message.get("timeframes", [])
@@ -536,6 +718,14 @@ class ConnectionManager:
                 subs["alerts"] = False
             elif channel == "assistant_patrol":
                 subs["assistant_patrol"] = False
+            elif channel == "trend_research":
+                subs["trend_research"] = False
+            elif channel == "trend_diagnostics":
+                subs["trend_diagnostics"] = {
+                    "active": False,
+                    "inst_id": "",
+                    "timeline_limit": 40,
+                }
 
         # 兼容旧格式
         if not channels and instruments:
@@ -550,6 +740,9 @@ class ConnectionManager:
             await okx_manager.unsubscribe_tickers(to_unsubscribe)
         if to_unsubscribe_candles and okx_manager.is_business_running:
             await okx_manager.unsubscribe_candles(to_unsubscribe_candles)
+        if private_mode and had_private_subscription and not self._has_private_subscription(subs):
+            if self._decrement_private_ref(private_mode) == 0:
+                await get_ctx().stop_private_ws(private_mode)
 
     def get_stats(self) -> Dict[str, Any]:
         """获取连接统计"""
@@ -560,6 +753,8 @@ class ConnectionManager:
         fills_count = 0
         alerts_count = 0
         assistant_patrol_count = 0
+        trend_research_count = 0
+        trend_diagnostics_count = 0
 
         for subs in self._connections.values():
             all_tickers.update(subs["tickers"])
@@ -574,6 +769,10 @@ class ConnectionManager:
                 alerts_count += 1
             if subs["assistant_patrol"]:
                 assistant_patrol_count += 1
+            if subs["trend_research"]:
+                trend_research_count += 1
+            if subs["trend_diagnostics"]["active"]:
+                trend_diagnostics_count += 1
 
         return {
             "active_connections": len(self._connections),
@@ -584,6 +783,8 @@ class ConnectionManager:
             "fills_subscribers": fills_count,
             "alerts_subscribers": alerts_count,
             "assistant_patrol_subscribers": assistant_patrol_count,
+            "trend_research_subscribers": trend_research_count,
+            "trend_diagnostics_subscribers": trend_diagnostics_count,
         }
 
 
@@ -606,6 +807,24 @@ async def _on_assistant_patrol_event(payload: Dict[str, Any]):
 get_assistant_patrol(get_ctx()).add_listener(_on_assistant_patrol_event)
 
 
+def _on_trend_research_event(payload: Dict[str, Any]):
+    connection_manager.schedule_trend_research_broadcast(payload)
+
+
+get_ctx().trend_research().add_listener(_on_trend_research_event)
+
+
+async def _on_trend_diagnostics_event(payload: Dict[str, Any]):
+    await connection_manager._broadcast_trend_diagnostics(payload)
+
+
+_trend_service = get_ctx().trend_research()
+if hasattr(_trend_service, "add_diagnostics_listener"):
+    _trend_service.add_diagnostics_listener(
+        lambda payload: asyncio.create_task(_on_trend_diagnostics_event(payload))
+    )
+
+
 @router.websocket("/market")
 async def websocket_market(websocket: WebSocket):
     """
@@ -619,7 +838,9 @@ async def websocket_market(websocket: WebSocket):
     - 成交:   {"action": "subscribe", "channels": ["fills"]}
     - 提醒:   {"action": "subscribe", "channels": ["alerts"]}
     - 巡检:   {"action": "subscribe", "channels": ["assistant_patrol"]}
-    - 全部:   {"action": "subscribe", "channels": ["ticker", "candle", "account", "orders", "fills"], "instruments": ["BTC-USDT"], "timeframe": "1H"}
+    - 趋势研究: {"action": "subscribe", "channels": ["trend_research"]}
+    - 趋势诊断: {"action": "subscribe", "channels": ["trend_diagnostics"], "inst_id": "BTC-USDT-SWAP", "timeline_limit": 40}
+    - 全部:   {"action": "subscribe", "channels": ["ticker", "candle", "account", "orders", "fills", "trend_research"], "instruments": ["BTC-USDT"], "timeframe": "1H"}
 
     推送格式:
     - {"type": "ticker",  "data": {...}}
@@ -629,6 +850,8 @@ async def websocket_market(websocket: WebSocket):
     - {"type": "fill",    "data": {...}}
     - {"type": "alert",   "data": {...}}
     - {"type": "assistant_patrol", "data": {...}}
+    - {"type": "trend_research", "data": {...}}
+    - {"type": "trend_diagnostics", "data": {...}}
     """
     await connection_manager.connect(websocket)
 

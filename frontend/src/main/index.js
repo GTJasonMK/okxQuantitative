@@ -2,30 +2,18 @@
 
 const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const path = require('path');
+const {
+  connectDevServerWindow,
+  DEFAULT_DEV_SERVER_URL,
+  MAX_RETRIES,
+  RETRY_INTERVAL_MS,
+} = require('./devServer');
 
 // Development mode: use app.isPackaged (more reliable)
 const isDev = !app.isPackaged;
 
 let mainWindow = null;
-
-const DEV_SERVER_URL = 'http://localhost:5173';
-const MAX_RETRIES = 30;
-const RETRY_INTERVAL_MS = 1000;
-
-/**
- * 加载 Vite 开发服务器 URL，连接失败时自动重试
- * 解决 Electron 启动快于 Vite 导致 ERR_CONNECTION_REFUSED 的问题
- */
-function loadDevURL(win, retryCount = 0) {
-  win.loadURL(DEV_SERVER_URL).catch(() => {
-    if (retryCount >= MAX_RETRIES) {
-      console.error(`[Electron] Vite 开发服务器连接失败，已重试 ${MAX_RETRIES} 次`);
-      return;
-    }
-    console.log(`[Electron] 等待 Vite 开发服务器... (${retryCount + 1}/${MAX_RETRIES})`);
-    setTimeout(() => loadDevURL(win, retryCount + 1), RETRY_INTERVAL_MS);
-  });
-}
+const activeDevServerUrl = process.env.OKX_DEV_SERVER_URL || DEFAULT_DEV_SERVER_URL;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -44,9 +32,17 @@ function createWindow() {
   });
 
   if (isDev) {
-    // Dev mode: 加载 Vite 开发服务器，连接失败时自动重试
-    loadDevURL(mainWindow);
-    mainWindow.webContents.openDevTools();
+    connectDevServerWindow(mainWindow, {
+      url: activeDevServerUrl,
+      maxRetries: MAX_RETRIES,
+      retryIntervalMs: RETRY_INTERVAL_MS,
+    })
+      .then(() => {
+        mainWindow.webContents.openDevTools();
+      })
+      .catch((error) => {
+        console.error(`[Electron] ${error.message}`);
+      });
   } else {
     // Production: load built files
     mainWindow.loadFile(path.join(__dirname, '../../dist-renderer/index.html'));

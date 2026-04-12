@@ -36,7 +36,6 @@ export function createMarketViewChartRenderingSupport(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -268,7 +267,6 @@ export function createMarketViewChartRenderingSupport(ctx) {
     const width = Number(el.clientWidth) || 0;
     const height = Number(el.clientHeight) || 0;
 
-    // 容器尚未参与布局时先延后，避免 ECharts 在 0x0 尺寸上初始化报错。
     if (width <= 0 || height <= 0) {
       if (retryAttempt < MAX_CHART_INIT_RETRY_COUNT) {
         scheduleChartInitRetry(symbol, retryAttempt + 1);
@@ -278,122 +276,17 @@ export function createMarketViewChartRenderingSupport(ctx) {
 
     clearChartInitRetry(symbol);
     disposeChartInstance(symbol);
-    const initialViewport = getChartViewportState(symbol, candlesData[symbol]?.length || 0);
-    const chartDevicePixelRatio = 1;
 
-    const chart = echarts.init(el, 'dark', {
-      renderer: 'canvas',
-      // dataZoom + 自定义 graphic/annotation 场景下，脏矩形重绘会留下轴标签残影。
-      useDirtyRect: false,
-      devicePixelRatio: chartDevicePixelRatio,
-    });
-    chartRawResizeFns.set(chart, chart.resize.bind(chart));
-    chart.resize = (resizeOptions) => applyChartResize(symbol, chart, resizeOptions);
-    chartInstances[symbol] = chart;
-    observeChartResize(symbol, el);
-
-    // 设置初始空配置，避免未设置数据时报错
-    applyChartSetOption(symbol, chart, {
-      backgroundColor: 'transparent',
-      grid: [
-        { left: 50, right: 10, top: 10, bottom: 100 },
-        { left: 50, right: 10, height: 35, bottom: 55 },
-      ],
-      xAxis: [
-        { type: 'category', data: [] },
-        { type: 'category', gridIndex: 1, data: [] },
-      ],
-      yAxis: [
-        { type: 'value' },
-        { type: 'value', gridIndex: 1 },
-      ],
-      dataZoom: [
-        {
-          id: 'inside',
-          type: 'inside',
-          xAxisIndex: [0, 1],
-          filterMode: 'filter',
-          start: initialViewport.start,
-          end: initialViewport.end,
-          minSpan: MIN_DATA_ZOOM_SPAN_PERCENT,
-          throttle: 24,
-          // 主图平移统一走自定义拖拽逻辑，避免与内置 inside dataZoom 重复响应。
-          moveOnMouseMove: false,
-          moveOnMouseWheel: false,
-          zoomOnMouseWheel: false,
-          preventDefaultMouseMove: true,
-        },
-        {
-          id: 'slider',
-          type: 'slider',
-          xAxisIndex: [0, 1],
-          filterMode: 'filter',
-          start: initialViewport.start,
-          end: initialViewport.end,
-          minSpan: MIN_DATA_ZOOM_SPAN_PERCENT,
-          throttle: 24,
-          height: 24,
-          bottom: 5,
-          handleSize: 18,
-          moveHandleSize: 10,
-          showDetail: false,
-          brushSelect: false,
-          borderColor: '#30363d',
-          backgroundColor: 'rgba(47, 69, 84, 0.3)',
-          fillerColor: 'rgba(247, 147, 26, 0.2)',
-          handleStyle: { color: '#F7931A', borderColor: '#F7931A' },
-          textStyle: { color: '#8b949e', fontSize: 10 },
-          dataBackground: {
-            lineStyle: { color: '#30363d' },
-            areaStyle: { color: 'rgba(47, 69, 84, 0.3)' },
-          },
-        },
-      ],
-      series: [
-        { type: 'candlestick', data: [] },
-        { type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: [] },
-      ],
-    }, { lazyUpdate: true, silent: true }, 'init');
-    chart.on('datazoom', () => {
-      const zoomWindow = getChartDataZoomWindow(chart);
-      if (!zoomWindow) return;
-      markChartViewportInteracting(symbol);
-      const dataLength = candlesData[symbol]?.length || 0;
-      if (dataLength > 0) {
-        const maxViewportStart = getChartMaxViewportStart(
-          dataLength,
-          zoomWindow.span,
-          currentTimeframe.value
-        );
-        const clampedStart = clamp(zoomWindow.start, 0, maxViewportStart);
-        const clampedEnd = clampedStart + zoomWindow.span;
-
-        setChartViewportState(symbol, clampedStart, clampedEnd, 'user', {
-          keepLatestCentered: Math.abs(clampedStart - maxViewportStart) <= 0.05,
-        });
-
-        if (
-          Math.abs(clampedStart - zoomWindow.start) > 0.05
-          || Math.abs(clampedEnd - zoomWindow.end) > 0.05
-        ) {
-          scheduleChartViewportAction(symbol, clampedStart, clampedEnd);
-        }
-      } else {
-        setChartViewportState(symbol, zoomWindow.start, zoomWindow.end, 'user');
-      }
-
-      if (typeof ctx.scheduleChartViewportAxisRefresh === 'function') {
-        ctx.scheduleChartViewportAxisRefresh(symbol);
-      }
-    });
-    bindChartWheelInteraction(symbol, chart);
-    bindChartDragInteraction(symbol, chart);
-    bindChartAnnotationInteraction(symbol, chart);
-
-    // 确保图表获取正确尺寸
-    setTimeout(() => {
-      chart.resize();
-    }, 100);
+    // 使用 Lightweight Charts 替代 ECharts
+    const { lwcManagers, createKlineChartManager: createManager } = ctx;
+    let manager = lwcManagers.get(symbol);
+    if (!manager) {
+      manager = createManager();
+      lwcManagers.set(symbol, manager);
+    }
+    const lwcChart = manager.init(el);
+    // 将 LWC chart 存入 chartInstances 以便 resize 等统一管理
+    chartInstances[symbol] = lwcChart;
   };
 
   // 计算移动平均线

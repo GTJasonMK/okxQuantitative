@@ -1,3 +1,5 @@
+import { HorizontalLinePrimitive, TrendLinePrimitive, RectanglePrimitive, RulerPrimitive } from './lwc-annotations';
+
 export function createMarketViewChartAnnotationGeometry(ctx) {
   let {
     api,
@@ -36,7 +38,6 @@ export function createMarketViewChartAnnotationGeometry(ctx) {
     applyIncomingTicker,
     clamp,
     nextTick,
-    echarts,
     chartViewportStates,
     chartWheelInteractionHandlers,
     chartDragInteractionHandlers,
@@ -623,6 +624,10 @@ export function createMarketViewChartAnnotationGeometry(ctx) {
   };
 
   getChartValueFromPointerEvent = (symbol, chart, event) => {
+    // LWC 实例没有 convertFromPixel/containPixel，标注交互由 lwc-annotations 管理
+    if (!chart || typeof chart.convertFromPixel !== 'function') {
+      return null;
+    }
     const candles = candlesData[symbol];
     if (!chart || !Array.isArray(candles) || candles.length === 0) {
       return null;
@@ -689,6 +694,42 @@ export function createMarketViewChartAnnotationGeometry(ctx) {
       ...getChartAnnotations(symbol),
       annotation,
     ]);
+    // 桥接到 LWC AnnotationManager
+    const { lwcManagers } = ctx;
+    const manager = lwcManagers?.get(symbol);
+    if (manager?.annotations) {
+      const type = annotation.type;
+      const color = annotation.meta?.color || '#F7931A';
+      const source = annotation.meta?.source || 'assistant';
+      let primitive = null;
+      if (type === 'horizontal') {
+        primitive = new HorizontalLinePrimitive({
+          id: annotation.id, price: annotation.price, color, source,
+          label: annotation.meta?.label || '',
+        });
+      } else if (type === 'trendline') {
+        primitive = new TrendLinePrimitive({
+          id: annotation.id, color, source,
+          p1: { time: Math.floor(annotation.startTs / 1000), price: annotation.startPrice },
+          p2: { time: Math.floor(annotation.endTs / 1000), price: annotation.endPrice },
+        });
+      } else if (type === 'rectangle') {
+        primitive = new RectanglePrimitive({
+          id: annotation.id, color, source,
+          p1: { time: Math.floor(annotation.startTs / 1000), price: annotation.startPrice },
+          p2: { time: Math.floor(annotation.endTs / 1000), price: annotation.endPrice },
+        });
+      } else if (type === 'ruler') {
+        primitive = new RulerPrimitive({
+          id: annotation.id, color, source,
+          p1: { time: Math.floor(annotation.startTs / 1000), price: annotation.startPrice },
+          p2: { time: Math.floor(annotation.endTs / 1000), price: annotation.endPrice },
+        });
+      }
+      if (primitive) {
+        manager.annotations.add(primitive);
+      }
+    }
   };
 
   bindChartAnnotationInteraction = (symbol, chart) => {

@@ -25,6 +25,8 @@ except Exception:
     WsPrivateAsync = types.SimpleNamespace(WsPrivateAsync=_missing_okx_ws)
 
 from ..config import config
+from .okx_outbound import get_okx_outbound_governor
+from .trend_research.models import BookTopEvent, TradeTickEvent
 from ..utils.mode import coerce_mode, mode_from_bool
 
 
@@ -35,6 +37,31 @@ WS_BUSINESS_URL_LIVE = "wss://ws.okx.com:8443/ws/v5/business"
 WS_BUSINESS_URL_SIMULATED = "wss://wspap.okx.com:8443/ws/v5/business?brokerId=9999"
 WS_PRIVATE_URL_LIVE = "wss://ws.okx.com:8443/ws/v5/private"
 WS_PRIVATE_URL_SIMULATED = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
+WS_IDLE_TIMEOUT_SECONDS = 25.0
+WS_PONG_TIMEOUT_SECONDS = 10.0
+WS_RECONNECT_DELAY_SECONDS = 1.0
+
+
+def _parse_order_book_levels(levels: list) -> tuple[tuple[float, float], ...]:
+    normalized_levels: list[tuple[float, float]] = []
+    for level in levels:
+        try:
+            normalized_levels.append((float(level[0]), float(level[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return tuple(normalized_levels)
+
+
+def _unique_inst_ids(inst_ids: List[str]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for inst_id in inst_ids:
+        normalized = str(inst_id or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
 
 
 @dataclass
@@ -232,7 +259,7 @@ class OKXWebSocketManager:
     - 私有通道: 账户余额 (account), 订单 (orders), 成交 (fills)
     """
 
-    def __init__(self, is_simulated: bool = True):
+    def __init__(self, is_simulated: bool = True, outbound=None):
         """
         初始化 WebSocket 管理器
 
@@ -240,26 +267,36 @@ class OKXWebSocketManager:
             is_simulated: True=模拟盘, False=实盘
         """
         self._is_simulated = is_simulated
-        self._public_url = WS_PUBLIC_URL_SIMULATED if is_simulated else WS_PUBLIC_URL_LIVE
-        self._business_url = WS_BUSINESS_URL_SIMULATED if is_simulated else WS_BUSINESS_URL_LIVE
+        self._outbound = outbound or get_okx_outbound_governor()
+        # 公共行情 / Business K 线统一使用 live 公共市场源，避免与公共 REST 源不一致。
+        self._public_url = WS_PUBLIC_URL_LIVE
+        self._business_url = WS_BUSINESS_URL_LIVE
         self._private_url = WS_PRIVATE_URL_SIMULATED if is_simulated else WS_PRIVATE_URL_LIVE
 
         # 公共 WebSocket
         self._public_ws: Optional[WsPublicAsync.WsPublicAsync] = None
         self._public_running = False
+        self._public_consumer_task: Optional[asyncio.Task] = None
+        self._public_reconnect_task: Optional[asyncio.Task] = None
 
         # Business WebSocket（K 线等业务频道）
         self._business_ws: Optional[WsPublicAsync.WsPublicAsync] = None
         self._business_running = False
+        self._business_consumer_task: Optional[asyncio.Task] = None
+        self._business_reconnect_task: Optional[asyncio.Task] = None
 
         # 私有 WebSocket
         self._private_ws: Optional[WsPrivateAsync.WsPrivateAsync] = None
         self._private_running = False
+        self._private_consumer_task: Optional[asyncio.Task] = None
+        self._private_reconnect_task: Optional[asyncio.Task] = None
 
         self._lock = Lock()
 
         # 订阅的交易对集合
         self._subscribed_ticker_instruments: Set[str] = set()
+        self._subscribed_trade_instruments: Set[str] = set()
+        self._subscribed_book_keys: Set[str] = set()
         self._subscribed_candle_keys: Set[str] = set()
 
         # 数据缓存
@@ -271,6 +308,8 @@ class OKXWebSocketManager:
 
         # 回调函数
         self._ticker_callbacks: List[Callable] = []
+        self._trade_callbacks: List[Callable] = []
+        self._book_callbacks: List[Callable] = []
         self._candle_callbacks: List[Callable] = []
         self._account_callbacks: List[Callable] = []
         self._orders_callbacks: List[Callable] = []
@@ -302,6 +341,337 @@ class OKXWebSocketManager:
         """获取当前模式"""
         return "simulated" if self._is_simulated else "live"
 
+    def _ws_connection_scope(self, channel_name: str) -> str:
+        return f"ws_conn_ops:{id(self)}:{channel_name}"
+
+    def _reserve_ws_rule(self, op_key: str, scope_key: str):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return None
+        return outbound.acquire(op_key, scope_key=scope_key)
+
+    async def _run_ws_control(
+        self,
+        op_key: str,
+        *,
+        scope_key: str,
+        inst_id: str = "",
+        operation,
+    ):
+        outbound = getattr(self, "_outbound", None)
+        if outbound is None:
+            return await operation()
+        return await outbound.execute_ws_control(
+            op_key=op_key,
+            scope_key=scope_key,
+            inst_id=inst_id,
+            mode=self.mode,
+            operation=operation,
+        )
+
+    def _summarize_ws_targets(self, items: List[str]) -> str:
+        if not items:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        return f"{items[0]} +{len(items) - 1}"
+
+    def _ws_state_name(self, websocket: Any) -> str:
+        state = getattr(websocket, "state", None)
+        if state is None:
+            return ""
+        return str(getattr(state, "name", state)).upper()
+
+    def _consumer_task_attr(self, channel_name: str) -> str:
+        return f"_{channel_name}_consumer_task"
+
+    def _reconnect_task_attr(self, channel_name: str) -> str:
+        return f"_{channel_name}_reconnect_task"
+
+    def _ws_attr(self, channel_name: str) -> str:
+        return f"_{channel_name}_ws"
+
+    def _running_attr(self, channel_name: str) -> str:
+        return f"_{channel_name}_running"
+
+    def _channel_label(self, channel_name: str) -> str:
+        return f"WS-{channel_name.capitalize()}"
+
+    def _channel_has_recoverable_subscriptions(self, channel_name: str) -> bool:
+        if channel_name == "public":
+            return bool(
+                self._subscribed_ticker_instruments
+                or self._subscribed_trade_instruments
+                or self._subscribed_book_keys
+            )
+        if channel_name == "business":
+            return bool(self._subscribed_candle_keys)
+        return False
+
+    async def _cancel_consumer_task(self, channel_name: str) -> None:
+        task = getattr(self, self._consumer_task_attr(channel_name), None)
+        if task is None:
+            return
+        if task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"[{self._channel_label(channel_name)}] 消费任务结束异常: {e}")
+            setattr(self, self._consumer_task_attr(channel_name), None)
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[{self._channel_label(channel_name)}] 取消消费任务失败: {e}")
+        setattr(self, self._consumer_task_attr(channel_name), None)
+
+    async def _cancel_reconnect_task(self, channel_name: str) -> None:
+        task = getattr(self, self._reconnect_task_attr(channel_name), None)
+        if task is None:
+            return
+        if task.done():
+            setattr(self, self._reconnect_task_attr(channel_name), None)
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[{self._channel_label(channel_name)}] 取消重连任务失败: {e}")
+        setattr(self, self._reconnect_task_attr(channel_name), None)
+
+    async def _close_ws_client(self, channel_name: str, ws_client: Any) -> None:
+        if ws_client is None:
+            return
+        try:
+            await ws_client.stop()
+        except Exception as e:
+            print(f"[{self._channel_label(channel_name)}] 关闭连接失败: {e}")
+
+    async def _await_ws_message(self, websocket: Any, timeout_seconds: float):
+        return await asyncio.wait_for(websocket.recv(), timeout=timeout_seconds)
+
+    async def _consume_ws_messages(
+        self,
+        channel_name: str,
+        ws_client: Any,
+        callback,
+        *,
+        idle_timeout_seconds: float = WS_IDLE_TIMEOUT_SECONDS,
+        ping_timeout_seconds: float = WS_PONG_TIMEOUT_SECONDS,
+    ):
+        websocket = getattr(ws_client, "websocket", None)
+        if websocket is None:
+            await self._handle_consumer_disconnect(channel_name, ws_client, RuntimeError("WebSocket 未建立"))
+            return
+        try:
+            while True:
+                try:
+                    message = await self._await_ws_message(websocket, idle_timeout_seconds)
+                except asyncio.TimeoutError:
+                    await websocket.send("ping")
+                    message = await self._await_ws_message(websocket, ping_timeout_seconds)
+                if message in {"pong", "ping"}:
+                    continue
+                result = callback(message)
+                if asyncio.iscoroutine(result):
+                    await result
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await self._handle_consumer_disconnect(channel_name, ws_client, e)
+
+    async def _handle_consumer_disconnect(self, channel_name: str, ws_client: Any, exc: Exception) -> None:
+        current_ws = getattr(self, self._ws_attr(channel_name), None)
+        if current_ws is ws_client:
+            setattr(self, self._running_attr(channel_name), False)
+            setattr(self, self._ws_attr(channel_name), None)
+        setattr(self, self._consumer_task_attr(channel_name), None)
+        print(f"[{self._channel_label(channel_name)}] 连接已断开: {exc}")
+        if current_ws is ws_client:
+            self._schedule_channel_reconnect(channel_name)
+
+    async def _await_reconnect_task(self, channel_name: str) -> bool:
+        task = getattr(self, self._reconnect_task_attr(channel_name), None)
+        if task is None or task.done():
+            return False
+        await task
+        return True
+
+    async def _restart_channel_connection(self, channel_name: str) -> None:
+        if channel_name == "public":
+            await self._restart_public_connection()
+            return
+        if channel_name == "business":
+            await self._restart_business_connection()
+            return
+        raise ValueError(f"unsupported reconnect channel: {channel_name}")
+
+    async def _recover_channel(self, channel_name: str) -> None:
+        try:
+            while self._channel_has_recoverable_subscriptions(channel_name):
+                try:
+                    await asyncio.sleep(WS_RECONNECT_DELAY_SECONDS)
+                    await self._restart_channel_connection(channel_name)
+                    print(f"[{self._channel_label(channel_name)}] 自动重连成功")
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    print(f"[{self._channel_label(channel_name)}] 自动重连失败: {e}")
+        finally:
+            current_task = asyncio.current_task()
+            task_attr = self._reconnect_task_attr(channel_name)
+            if getattr(self, task_attr, None) is current_task:
+                setattr(self, task_attr, None)
+
+    def _schedule_channel_reconnect(self, channel_name: str) -> None:
+        if not self._channel_has_recoverable_subscriptions(channel_name):
+            return
+        task_attr = self._reconnect_task_attr(channel_name)
+        task = getattr(self, task_attr, None)
+        if task is not None and not task.done():
+            return
+        setattr(
+            self,
+            task_attr,
+            asyncio.create_task(
+                self._recover_channel(channel_name),
+                name=f"okx_{channel_name}_reconnect",
+            ),
+        )
+
+    def _spawn_consumer_task(self, channel_name: str, ws_client: Any, callback) -> None:
+        task = asyncio.create_task(
+            self._consume_ws_messages(channel_name, ws_client, callback),
+            name=f"okx_{channel_name}_consumer",
+        )
+        setattr(self, self._consumer_task_attr(channel_name), task)
+
+    def _is_ws_client_healthy(self, ws_client: Any) -> bool:
+        if ws_client is None:
+            return False
+
+        websocket = getattr(ws_client, "websocket", None)
+        if websocket is None:
+            return False
+
+        if getattr(websocket, "recv_exc", None) is not None:
+            return False
+
+        state_name = self._ws_state_name(websocket)
+        if state_name in {"CLOSED", "CLOSING"}:
+            return False
+
+        closed = getattr(websocket, "closed", None)
+        if isinstance(closed, bool):
+            return not closed
+        return True
+
+    def _assert_ws_connected(self, ws_client: Any, error_message: str) -> None:
+        if getattr(ws_client, "websocket", None) is None:
+            raise RuntimeError(error_message)
+
+    def _snapshot_public_subscriptions(self) -> Dict[str, List[str]]:
+        return {
+            "tickers": sorted(self._subscribed_ticker_instruments),
+            "trades": sorted(self._subscribed_trade_instruments),
+            "books": sorted(self._subscribed_book_keys),
+        }
+
+    def _reset_public_connection_state(self) -> None:
+        self._public_running = False
+        self._public_ws = None
+        self._public_consumer_task = None
+
+    async def _restore_public_subscriptions(self, snapshot: Dict[str, List[str]]) -> None:
+        if snapshot["tickers"]:
+            await self.subscribe_tickers(snapshot["tickers"])
+        if snapshot["trades"]:
+            await self.subscribe_trades(snapshot["trades"])
+
+        books_by_channel: Dict[str, List[str]] = {}
+        for item in snapshot["books"]:
+            if "|" not in item:
+                continue
+            inst_id, channel = item.split("|", 1)
+            if not inst_id or not channel:
+                continue
+            books_by_channel.setdefault(channel, []).append(inst_id)
+        for channel, inst_ids in books_by_channel.items():
+            await self.subscribe_books(inst_ids, channel=channel)
+
+    async def _restart_public_connection(self) -> None:
+        snapshot = self._snapshot_public_subscriptions()
+        stale_ws = self._public_ws
+        self._reset_public_connection_state()
+        await self._cancel_consumer_task("public")
+        self._subscribed_ticker_instruments.clear()
+        self._subscribed_trade_instruments.clear()
+        self._subscribed_book_keys.clear()
+        self._ticker_cache.clear()
+
+        if stale_ws is not None:
+            await self._close_ws_client("public", stale_ws)
+
+        await self._start_public_connection()
+        await self._restore_public_subscriptions(snapshot)
+
+    async def _ensure_public_connection(self) -> None:
+        if self._public_running and self._is_ws_client_healthy(self._public_ws):
+            return
+        await self._await_reconnect_task("public")
+        if self._public_running and self._is_ws_client_healthy(self._public_ws):
+            return
+        print("[WS-Public] 检测到连接失效，正在重连")
+        await self._restart_public_connection()
+
+    def _snapshot_business_subscriptions(self) -> List[Tuple[str, str]]:
+        subscriptions = []
+        for key in sorted(self._subscribed_candle_keys):
+            parsed = _parse_candle_subscription_key(key)
+            if parsed:
+                subscriptions.append(parsed)
+        return subscriptions
+
+    def _reset_business_connection_state(self) -> None:
+        self._business_running = False
+        self._business_ws = None
+        self._business_consumer_task = None
+
+    async def _restore_business_subscriptions(self, snapshot: List[Tuple[str, str]]) -> None:
+        if snapshot:
+            await self.subscribe_candles(snapshot)
+
+    async def _restart_business_connection(self) -> None:
+        snapshot = self._snapshot_business_subscriptions()
+        stale_ws = self._business_ws
+        self._reset_business_connection_state()
+        await self._cancel_consumer_task("business")
+        self._subscribed_candle_keys.clear()
+        self._candle_cache.clear()
+
+        if stale_ws is not None:
+            await self._close_ws_client("business", stale_ws)
+
+        await self._start_business_connection()
+        await self._restore_business_subscriptions(snapshot)
+
+    async def _ensure_business_connection(self) -> None:
+        if self._business_running and self._is_ws_client_healthy(self._business_ws):
+            return
+        await self._await_reconnect_task("business")
+        if self._business_running and self._is_ws_client_healthy(self._business_ws):
+            return
+        print("[WS-Business] 检测到连接失效，正在重连")
+        await self._restart_business_connection()
+
     # ==================== 回调注册 ====================
 
     def add_ticker_callback(self, callback: Callable):
@@ -327,6 +697,30 @@ class OKXWebSocketManager:
         with self._lock:
             if callback in self._candle_callbacks:
                 self._candle_callbacks.remove(callback)
+
+    def add_trade_callback(self, callback: Callable):
+        """添加逐笔成交回调"""
+        with self._lock:
+            if callback not in self._trade_callbacks:
+                self._trade_callbacks.append(callback)
+
+    def remove_trade_callback(self, callback: Callable):
+        """移除逐笔成交回调"""
+        with self._lock:
+            if callback in self._trade_callbacks:
+                self._trade_callbacks.remove(callback)
+
+    def add_book_callback(self, callback: Callable):
+        """添加盘口回调"""
+        with self._lock:
+            if callback not in self._book_callbacks:
+                self._book_callbacks.append(callback)
+
+    def remove_book_callback(self, callback: Callable):
+        """移除盘口回调"""
+        with self._lock:
+            if callback in self._book_callbacks:
+                self._book_callbacks.remove(callback)
 
     def add_account_callback(self, callback: Callable):
         """添加账户回调"""
@@ -429,6 +823,62 @@ class OKXWebSocketManager:
                                 callback(ticker.inst_id, ticker)
                             except Exception as e:
                                 print(f"[WS-Public] 回调执行失败: {e}")
+                return
+
+            channel = data.get("arg", {}).get("channel", "")
+            inst_id = data.get("arg", {}).get("instId", "")
+
+            if "data" in data and channel == "trades":
+                with self._lock:
+                    callbacks = self._trade_callbacks.copy()
+                for item in data["data"]:
+                    try:
+                        event = TradeTickEvent(
+                            inst_id=item.get("instId", inst_id),
+                            ts_exchange=int(item.get("ts", 0)) / 1000.0,
+                            ts_local=time.time(),
+                            price=float(item.get("px", 0)),
+                            size=float(item.get("sz", 0)),
+                            side=item.get("side", ""),
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    self._public_message_count += 1
+                    for callback in callbacks:
+                        try:
+                            callback(event.inst_id, event)
+                        except Exception as e:
+                            print(f"[WS-Public] 逐笔回调执行失败: {e}")
+                return
+
+            if "data" in data and channel.startswith("books"):
+                with self._lock:
+                    callbacks = self._book_callbacks.copy()
+                for item in data["data"]:
+                    asks = item.get("asks") or []
+                    bids = item.get("bids") or []
+                    if not asks or not bids:
+                        continue
+                    try:
+                        event = BookTopEvent(
+                            inst_id=inst_id,
+                            ts_exchange=int(item.get("ts", 0)) / 1000.0,
+                            ts_local=time.time(),
+                            bid_price=float(bids[0][0]),
+                            ask_price=float(asks[0][0]),
+                            bid_size=float(bids[0][1]),
+                            ask_size=float(asks[0][1]),
+                            bid_levels=_parse_order_book_levels(bids),
+                            ask_levels=_parse_order_book_levels(asks),
+                        )
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    self._public_message_count += 1
+                    for callback in callbacks:
+                        try:
+                            callback(event.inst_id, event)
+                        except Exception as e:
+                            print(f"[WS-Public] 盘口回调执行失败: {e}")
 
         except json.JSONDecodeError:
             pass
@@ -575,6 +1025,30 @@ class OKXWebSocketManager:
 
     # ==================== 连接管理 ====================
 
+    async def _start_public_connection(self):
+        self._public_ws = WsPublicAsync.WsPublicAsync(url=self._public_url)
+        await self._run_ws_control(
+            "ws.connect",
+            scope_key="ws_connect_ip",
+            operation=lambda: self._public_ws.connect(),
+        )
+        self._assert_ws_connected(self._public_ws, "公共 WebSocket 连接建立失败")
+        self._public_running = True
+        self._spawn_consumer_task("public", self._public_ws, self._on_public_message)
+        print(f"[WS-Public] 连接成功，模式: {self.mode}")
+
+    async def _start_business_connection(self):
+        self._business_ws = WsPublicAsync.WsPublicAsync(url=self._business_url)
+        await self._run_ws_control(
+            "ws.connect",
+            scope_key="ws_connect_ip",
+            operation=lambda: self._business_ws.connect(),
+        )
+        self._assert_ws_connected(self._business_ws, "Business WebSocket 连接建立失败")
+        self._business_running = True
+        self._spawn_consumer_task("business", self._business_ws, self._on_business_message)
+        print(f"[WS-Business] 连接成功，模式: {self.mode}")
+
     async def start(self):
         """启动公共/Business WebSocket 连接"""
         if self._public_running and self._business_running:
@@ -583,30 +1057,18 @@ class OKXWebSocketManager:
 
         try:
             if not self._public_running:
-                self._public_ws = WsPublicAsync.WsPublicAsync(url=self._public_url)
-                await self._public_ws.start()
-                self._public_running = True
-                print(f"[WS-Public] 连接成功，模式: {self.mode}")
+                await self._start_public_connection()
 
             if not self._business_running:
-                self._business_ws = WsPublicAsync.WsPublicAsync(url=self._business_url)
-                await self._business_ws.start()
-                self._business_running = True
-                print(f"[WS-Business] 连接成功，模式: {self.mode}")
+                await self._start_business_connection()
 
             self._start_time = time.time()
         except Exception as e:
             print(f"[WS-Public] 启动公共/Business 连接失败: {e}")
-            try:
-                if self._public_ws:
-                    await self._public_ws.stop()
-            except Exception:
-                pass
-            try:
-                if self._business_ws:
-                    await self._business_ws.stop()
-            except Exception:
-                pass
+            await self._cancel_consumer_task("public")
+            await self._cancel_consumer_task("business")
+            await self._close_ws_client("public", self._public_ws)
+            await self._close_ws_client("business", self._business_ws)
             self._public_ws = None
             self._business_ws = None
             self._public_running = False
@@ -632,7 +1094,14 @@ class OKXWebSocketManager:
                 secretKey=creds.secret_key,
                 url=self._private_url,
             )
-            await self._private_ws.start()
+            self._reserve_ws_rule("ws.login", self._ws_connection_scope("private"))
+            await self._run_ws_control(
+                "ws.connect",
+                scope_key="ws_connect_ip",
+                operation=lambda: self._private_ws.connect(),
+            )
+            self._assert_ws_connected(self._private_ws, "私有 WebSocket 连接建立失败")
+            self._spawn_consumer_task("private", self._private_ws, self._on_private_message)
 
             # 短暂等待登录响应（通常 500ms 内完成）
             await asyncio.sleep(0.5)
@@ -642,7 +1111,10 @@ class OKXWebSocketManager:
             if ws and getattr(ws, 'closed', False):
                 print("[WS-Private] 连接已被服务端关闭，登录可能失败")
                 print("[WS-Private] 请检查 API 密钥配置是否正确")
+                await self._cancel_consumer_task("private")
+                await self._close_ws_client("private", self._private_ws)
                 self._private_running = False
+                self._private_ws = None
                 return
 
             self._private_running = True
@@ -653,7 +1125,10 @@ class OKXWebSocketManager:
         except Exception as e:
             error_msg = str(e)
             print(f"[WS-Private] 连接失败: {error_msg}")
+            await self._cancel_consumer_task("private")
+            await self._close_ws_client("private", self._private_ws)
             self._private_running = False
+            self._private_ws = None
             # 登录失败通常是 API 密钥问题，打印更详细的提示
             if "Login failed" in error_msg or "4001" in error_msg:
                 print("[WS-Private] API 密钥认证失败，请检查:")
@@ -687,7 +1162,11 @@ class OKXWebSocketManager:
                 {"channel": "orders", "instType": "MARGIN"},
                 {"channel": "fills", "instType": "MARGIN"},
             ]
-            await self._private_ws.subscribe(channels, self._on_private_message)
+            await self._run_ws_control(
+                "ws.subscribe",
+                scope_key=self._ws_connection_scope("private"),
+                operation=lambda: self._private_ws.subscribe(channels, self._on_private_message),
+            )
 
             print("[WS-Private] 已订阅: account, orders(SPOT/SWAP/FUTURES/MARGIN), fills(SPOT/SWAP/FUTURES/MARGIN)")
         except Exception as e:
@@ -695,27 +1174,36 @@ class OKXWebSocketManager:
 
     async def stop(self):
         """停止所有 WebSocket 连接"""
+        await self._cancel_reconnect_task("public")
+        await self._cancel_reconnect_task("business")
+        await self._cancel_reconnect_task("private")
         # 停止公共连接
         if self._public_running:
             try:
+                await self._cancel_consumer_task("public")
                 if self._public_ws:
-                    await self._public_ws.stop()
+                    await self._close_ws_client("public", self._public_ws)
                 self._public_running = False
                 self._subscribed_ticker_instruments.clear()
+                self._subscribed_trade_instruments.clear()
+                self._subscribed_book_keys.clear()
                 self._ticker_cache.clear()
                 self._public_ws = None
+                self._public_consumer_task = None
                 print("[WS-Public] 连接已关闭")
             except Exception as e:
                 print(f"[WS-Public] 关闭连接失败: {e}")
 
         if self._business_running:
             try:
+                await self._cancel_consumer_task("business")
                 if self._business_ws:
-                    await self._business_ws.stop()
+                    await self._close_ws_client("business", self._business_ws)
                 self._business_running = False
                 self._subscribed_candle_keys.clear()
                 self._candle_cache.clear()
                 self._business_ws = None
+                self._business_consumer_task = None
                 print("[WS-Business] 连接已关闭")
             except Exception as e:
                 print(f"[WS-Business] 关闭连接失败: {e}")
@@ -723,12 +1211,38 @@ class OKXWebSocketManager:
         # 停止私有连接
         if self._private_running:
             try:
+                await self._cancel_consumer_task("private")
                 if self._private_ws:
-                    await self._private_ws.stop()
+                    await self._close_ws_client("private", self._private_ws)
                 self._private_running = False
+                self._private_ws = None
+                self._private_consumer_task = None
+                self._account_cache.clear()
+                self._orders_cache.clear()
+                self._fills_cache.clear()
                 print("[WS-Private] 连接已关闭")
             except Exception as e:
                 print(f"[WS-Private] 关闭连接失败: {e}")
+
+    async def stop_private(self):
+        """仅停止私有 WebSocket，保留公共行情 / Business 连接。"""
+        await self._cancel_reconnect_task("private")
+        if not self._private_running:
+            return
+
+        try:
+            await self._cancel_consumer_task("private")
+            if self._private_ws:
+                await self._close_ws_client("private", self._private_ws)
+            self._private_running = False
+            self._private_ws = None
+            self._private_consumer_task = None
+            self._account_cache.clear()
+            self._orders_cache.clear()
+            self._fills_cache.clear()
+            print(f"[WS-Private] 私有连接已关闭，模式: {self.mode}")
+        except Exception as e:
+            print(f"[WS-Private] 关闭私有连接失败: {e}")
 
     # ==================== 订阅管理 ====================
 
@@ -739,9 +1253,7 @@ class OKXWebSocketManager:
         Args:
             inst_ids: 交易对列表，如 ["BTC-USDT", "ETH-USDT"]
         """
-        if not self._public_running:
-            print("[WS-Public] 未连接，无法订阅")
-            return
+        await self._ensure_public_connection()
 
         # 过滤已订阅的
         new_instruments = [i for i in inst_ids if i not in self._subscribed_ticker_instruments]
@@ -750,7 +1262,12 @@ class OKXWebSocketManager:
 
         try:
             params = [{"channel": "tickers", "instId": inst_id} for inst_id in new_instruments]
-            await self._public_ws.subscribe(params, self._on_public_message)
+            await self._run_ws_control(
+                "ws.subscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets(new_instruments),
+                operation=lambda: self._public_ws.subscribe(params, self._on_public_message),
+            )
 
             for inst_id in new_instruments:
                 self._subscribed_ticker_instruments.add(inst_id)
@@ -759,18 +1276,108 @@ class OKXWebSocketManager:
         except Exception as e:
             print(f"[WS-Public] 订阅失败: {e}")
 
-    async def unsubscribe_tickers(self, inst_ids: List[str]):
-        """取消订阅实时行情"""
-        if not self._public_running:
+    async def subscribe_trades(self, inst_ids: List[str]):
+        """订阅交易对的逐笔成交。"""
+        await self._ensure_public_connection()
+
+        new_instruments = [i for i in _unique_inst_ids(inst_ids) if i not in self._subscribed_trade_instruments]
+        if not new_instruments:
             return
 
+        params = [{"channel": "trades", "instId": inst_id} for inst_id in new_instruments]
+        await self._run_ws_control(
+            "ws.subscribe",
+            scope_key=self._ws_connection_scope("public"),
+            inst_id=self._summarize_ws_targets(new_instruments),
+            operation=lambda: self._public_ws.subscribe(params, self._on_public_message),
+        )
+        for inst_id in new_instruments:
+            self._subscribed_trade_instruments.add(inst_id)
+
+    async def subscribe_books(self, inst_ids: List[str], channel: str = "books5"):
+        """订阅交易对的盘口深度。"""
+        await self._ensure_public_connection()
+
+        pending = []
+        for inst_id in _unique_inst_ids(inst_ids):
+            key = f"{inst_id}|{channel}"
+            if key in self._subscribed_book_keys:
+                continue
+            pending.append((inst_id, key))
+        if not pending:
+            return
+
+        params = [{"channel": channel, "instId": inst_id} for inst_id, _ in pending]
+        await self._run_ws_control(
+            "ws.subscribe",
+            scope_key=self._ws_connection_scope("public"),
+            inst_id=self._summarize_ws_targets([inst_id for inst_id, _ in pending]),
+            operation=lambda: self._public_ws.subscribe(params, self._on_public_message),
+        )
+        for _, key in pending:
+            self._subscribed_book_keys.add(key)
+
+    async def refresh_trade_subscriptions(self, inst_ids: List[str]):
+        """强制重放逐笔订阅，绕过本地已订阅集合的去重。"""
+        normalized_ids = _unique_inst_ids(inst_ids)
+        if not normalized_ids:
+            return
+        await self._ensure_public_connection()
+        active_ids = [inst_id for inst_id in normalized_ids if inst_id in self._subscribed_trade_instruments]
+        if active_ids:
+            params = [{"channel": "trades", "instId": inst_id} for inst_id in active_ids]
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets(active_ids),
+                operation=lambda: self._public_ws.unsubscribe(params, self._on_public_message),
+            )
+            for inst_id in active_ids:
+                self._subscribed_trade_instruments.discard(inst_id)
+        await self.subscribe_trades(normalized_ids)
+
+    async def refresh_book_subscriptions(self, inst_ids: List[str], channel: str = "books5"):
+        """强制重放盘口订阅，绕过本地已订阅集合的去重。"""
+        normalized_ids = _unique_inst_ids(inst_ids)
+        if not normalized_ids:
+            return
+        await self._ensure_public_connection()
+        active_ids = [inst_id for inst_id in normalized_ids if f"{inst_id}|{channel}" in self._subscribed_book_keys]
+        if active_ids:
+            params = [{"channel": channel, "instId": inst_id} for inst_id in active_ids]
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets(active_ids),
+                operation=lambda: self._public_ws.unsubscribe(params, self._on_public_message),
+            )
+            for inst_id in active_ids:
+                self._subscribed_book_keys.discard(f"{inst_id}|{channel}")
+        await self.subscribe_books(normalized_ids, channel=channel)
+
+    async def unsubscribe_tickers(self, inst_ids: List[str]):
+        """取消订阅实时行情"""
         subscribed = [i for i in inst_ids if i in self._subscribed_ticker_instruments]
         if not subscribed:
             return
 
+        if not self._public_running or not self._is_ws_client_healthy(self._public_ws):
+            self._public_running = False
+            self._public_ws = None
+            for inst_id in subscribed:
+                self._subscribed_ticker_instruments.discard(inst_id)
+                self._ticker_cache.pop(inst_id, None)
+            print(f"[WS-Public] 连接已失效，本地移除 {len(subscribed)} 个 ticker 订阅")
+            return
+
         try:
             params = [{"channel": "tickers", "instId": inst_id} for inst_id in subscribed]
-            await self._public_ws.unsubscribe(params, self._on_public_message)
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets(subscribed),
+                operation=lambda: self._public_ws.unsubscribe(params, self._on_public_message),
+            )
 
             for inst_id in subscribed:
                 self._subscribed_ticker_instruments.discard(inst_id)
@@ -780,11 +1387,70 @@ class OKXWebSocketManager:
         except Exception as e:
             print(f"[WS-Public] 取消订阅失败: {e}")
 
+    async def unsubscribe_trades(self, inst_ids: List[str]):
+        """取消订阅逐笔成交。"""
+        subscribed = [inst_id for inst_id in inst_ids if inst_id in self._subscribed_trade_instruments]
+        if not subscribed:
+            return
+
+        if not self._public_running or not self._is_ws_client_healthy(self._public_ws):
+            self._public_running = False
+            self._public_ws = None
+            for inst_id in subscribed:
+                self._subscribed_trade_instruments.discard(inst_id)
+            print(f"[WS-Public] 连接已失效，本地移除 {len(subscribed)} 个逐笔订阅")
+            return
+
+        try:
+            params = [{"channel": "trades", "instId": inst_id} for inst_id in subscribed]
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets(subscribed),
+                operation=lambda: self._public_ws.unsubscribe(params, self._on_public_message),
+            )
+            for inst_id in subscribed:
+                self._subscribed_trade_instruments.discard(inst_id)
+            print(f"[WS-Public] 已取消订阅 {len(subscribed)} 个逐笔频道")
+        except Exception as e:
+            print(f"[WS-Public] 取消逐笔订阅失败: {e}")
+
+    async def unsubscribe_books(self, inst_ids: List[str], channel: str = "books5"):
+        """取消订阅盘口深度。"""
+        pending = []
+        for inst_id in inst_ids:
+            key = f"{inst_id}|{channel}"
+            if key not in self._subscribed_book_keys:
+                continue
+            pending.append((inst_id, key))
+        if not pending:
+            return
+
+        if not self._public_running or not self._is_ws_client_healthy(self._public_ws):
+            self._public_running = False
+            self._public_ws = None
+            for _, key in pending:
+                self._subscribed_book_keys.discard(key)
+            print(f"[WS-Public] 连接已失效，本地移除 {len(pending)} 个盘口订阅")
+            return
+
+        try:
+            params = [{"channel": channel, "instId": inst_id} for inst_id, _ in pending]
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("public"),
+                inst_id=self._summarize_ws_targets([inst_id for inst_id, _ in pending]),
+                operation=lambda: self._public_ws.unsubscribe(params, self._on_public_message),
+            )
+            for _, key in pending:
+                self._subscribed_book_keys.discard(key)
+            print(f"[WS-Public] 已取消订阅 {len(pending)} 个盘口频道")
+        except Exception as e:
+            print(f"[WS-Public] 取消盘口订阅失败: {e}")
+
     async def subscribe_candles(self, subscriptions: List[Tuple[str, str]]):
         """订阅交易对的实时 K 线"""
-        if not self._business_running:
-            print("[WS-Business] 未连接，无法订阅 K 线")
-            return
+        await self._ensure_business_connection()
 
         pending: List[Tuple[str, str]] = []
         for inst_id, timeframe in subscriptions:
@@ -807,7 +1473,12 @@ class OKXWebSocketManager:
                 }
                 for inst_id, timeframe in pending
             ]
-            await self._business_ws.subscribe(params, self._on_business_message)
+            await self._run_ws_control(
+                "ws.subscribe",
+                scope_key=self._ws_connection_scope("business"),
+                inst_id=self._summarize_ws_targets([inst_id for inst_id, _ in pending]),
+                operation=lambda: self._business_ws.subscribe(params, self._on_business_message),
+            )
 
             for inst_id, timeframe in pending:
                 self._subscribed_candle_keys.add(_build_candle_subscription_key(inst_id, timeframe))
@@ -842,7 +1513,12 @@ class OKXWebSocketManager:
                 }
                 for inst_id, timeframe in pending
             ]
-            await self._business_ws.unsubscribe(params, self._on_business_message)
+            await self._run_ws_control(
+                "ws.unsubscribe",
+                scope_key=self._ws_connection_scope("business"),
+                inst_id=self._summarize_ws_targets([inst_id for inst_id, _ in pending]),
+                operation=lambda: self._business_ws.unsubscribe(params, self._on_business_message),
+            )
 
             for inst_id, timeframe in pending:
                 key = _build_candle_subscription_key(inst_id, timeframe)
@@ -959,6 +1635,13 @@ async def start_private_ws_manager(mode: str):
     manager = get_ws_manager(mode)
     if not manager.is_private_running:
         await manager.start_private()
+    return manager
+
+
+async def stop_private_ws_manager(mode: str):
+    """仅停止指定 mode 的私有 WS（不影响公共 / Business 连接）。"""
+    manager = get_ws_manager(mode)
+    await manager.stop_private()
     return manager
 
 

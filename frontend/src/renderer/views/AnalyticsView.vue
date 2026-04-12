@@ -15,6 +15,9 @@
           <button class="av-tab" :class="{ active: activeAnalyticsTab === 'correlation' }" @click="activeAnalyticsTab = 'correlation'">
             市场相关性
           </button>
+          <button class="av-tab" :class="{ active: activeAnalyticsTab === 'trendResearch' }" @click="activeAnalyticsTab = 'trendResearch'">
+            趋势研究
+          </button>
         </nav>
       </div>
     </header>
@@ -375,14 +378,21 @@
         </div>
       </section>
     </div>
+
+    <!-- 趋势研究 tab -->
+    <div v-show="activeAnalyticsTab === 'trendResearch'" class="av-panel">
+      <TrendResearchPanel />
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import * as echarts from 'echarts';
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import TrendResearchPanel from '../components/analytics/TrendResearchPanel.vue';
 import { api } from '../services/api';
 import marketWS from '../services/websocket';
+import { createChart, disposeChart, ensureChartResize, CHART_COLORS } from '../utils/chart';
+import { buildTimeSeriesPoints, createTimeSeriesChartManager } from '../utils/lwcTimeSeriesChart.mjs';
 import {
   normalizeMonitorSymbol,
   formatMoney,
@@ -466,8 +476,7 @@ const currentPerformancePeriods = computed(() => {
 });
 
 const pnlChartRef = ref(null);
-let pnlChart = null;
-let pnlResizeHandler = null;
+const pnlChart = createTimeSeriesChartManager();
 
 const pnlChartData = computed(() => {
   const rows = performance.daily;
@@ -481,62 +490,41 @@ const pnlChartData = computed(() => {
 
 const updatePnlChart = () => {
   nextTick(() => {
-    // v-if 切换后 DOM 节点是新的，旧实例需销毁重建
-    if (pnlChart) {
-      window.removeEventListener('resize', pnlResizeHandler);
-      pnlChart.dispose();
-      pnlChart = null;
-    }
     if (!pnlChartRef.value) return;
-    pnlChart = echarts.init(pnlChartRef.value);
-    pnlResizeHandler = () => pnlChart?.resize();
-    window.addEventListener('resize', pnlResizeHandler);
     const data = pnlChartData.value;
-    if (data.length === 0) return;
+    pnlChart.init(pnlChartRef.value, {
+      scaleMargins: { top: 0.12, bottom: 0.18 },
+    });
+    if (data.length === 0) {
+      pnlChart.clear();
+      return;
+    }
+
     const isPositive = data[data.length - 1]?.value >= 0;
-    pnlChart.setOption({
-      tooltip: {
-        trigger: 'axis',
-        formatter: (params) => {
-          const p = params[0];
-          return `${p.name}<br/>累计盈亏：$${Number(p.value).toFixed(2)}`;
-        },
+    const color = isPositive ? CHART_COLORS.success : CHART_COLORS.danger;
+    const points = buildTimeSeriesPoints(data, (item) => ({
+      time: item.period,
+      value: item.value,
+    }));
+
+    pnlChart.setSeries([
+      {
+        key: 'cumulative-pnl',
+        label: '累计盈亏',
+        type: 'area',
+        color,
+        topColor: isPositive ? 'rgba(34, 197, 94, 0.28)' : 'rgba(239, 68, 68, 0.28)',
+        bottomColor: isPositive ? 'rgba(34, 197, 94, 0.02)' : 'rgba(239, 68, 68, 0.02)',
+        data: points,
+        valueFormatter: (value) => formatMoney(value),
       },
-      grid: { top: 16, left: 56, right: 16, bottom: 28 },
-      xAxis: {
-        type: 'category',
-        data: data.map(d => d.period),
-        axisLabel: { color: 'var(--text-muted)', fontSize: 10 },
-        axisLine: { lineStyle: { color: 'var(--border-color)' } },
-        boundaryGap: false,
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: { color: 'var(--text-muted)', fontSize: 10, formatter: v => `$${v}` },
-        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      },
-      series: [{
-        type: 'line',
-        data: data.map(d => d.value),
-        smooth: true,
-        symbol: 'none',
-        lineStyle: { color: isPositive ? 'var(--color-success)' : 'var(--color-danger)', width: 2 },
-        areaStyle: {
-          color: {
-            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: isPositive ? 'rgba(34,197,94,0.24)' : 'rgba(239,68,68,0.24)' },
-              { offset: 1, color: 'rgba(0,0,0,0)' },
-            ],
-          },
-        },
-      }],
+    ], {
+      priceFormatter: (value) => formatMoney(value),
     });
   });
 };
 
 let correlationChart = null;
-let resizeHandler = null;
 let alertListener = null;
 let perfLoadTimer = null;
 
@@ -693,11 +681,9 @@ const toggleCorrelationSymbol = (symbol) => {
 
 const initCorrelationChart = () => {
   if (!correlationChartRef.value) return;
-  correlationChart = echarts.init(correlationChartRef.value);
-  resizeHandler = () => {
-    correlationChart?.resize();
-  };
-  window.addEventListener('resize', resizeHandler);
+  if (!correlationChart || correlationChart.isDisposed()) {
+    correlationChart = createChart(correlationChartRef.value);
+  }
 };
 
 const updateCorrelationChart = () => {
@@ -728,14 +714,14 @@ const updateCorrelationChart = () => {
       xAxis: {
         type: 'category',
         data: correlation.symbols,
-        axisLabel: { color: 'var(--text-secondary)', rotate: 20 },
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
+        axisLabel: { color: CHART_COLORS.textSecondary, rotate: 20 },
+        axisLine: { lineStyle: { color: CHART_COLORS.borderSoft } },
       },
       yAxis: {
         type: 'category',
         data: correlation.symbols,
-        axisLabel: { color: 'var(--text-secondary)' },
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } },
+        axisLabel: { color: CHART_COLORS.textSecondary },
+        axisLine: { lineStyle: { color: CHART_COLORS.borderSoft } },
       },
       visualMap: {
         min: -1,
@@ -744,7 +730,7 @@ const updateCorrelationChart = () => {
         orient: 'horizontal',
         left: 'center',
         bottom: 0,
-        textStyle: { color: 'var(--text-secondary)' },
+        textStyle: { color: CHART_COLORS.textSecondary },
         inRange: {
           color: ['#1E293B', '#3B82F6', '#FFD600', '#F7931A', '#C2410C'],
         },
@@ -820,26 +806,25 @@ onMounted(async () => {
 });
 
 onActivated(() => {
-  if (resizeHandler) window.addEventListener('resize', resizeHandler);
-  if (pnlResizeHandler) window.addEventListener('resize', pnlResizeHandler);
   nextTick(() => {
-    correlationChart?.resize();
-    pnlChart?.resize();
+    ensureChartResize(correlationChart);
+    pnlChart.resize();
   });
-});
-
-onDeactivated(() => {
-  if (resizeHandler) window.removeEventListener('resize', resizeHandler);
-  if (pnlResizeHandler) window.removeEventListener('resize', pnlResizeHandler);
 });
 
 onUnmounted(() => {
   if (alertListener) marketWS.unsubscribeAlerts(alertListener);
-  if (resizeHandler) window.removeEventListener('resize', resizeHandler);
-  if (pnlResizeHandler) window.removeEventListener('resize', pnlResizeHandler);
   clearTimeout(perfLoadTimer);
-  if (correlationChart) { correlationChart.dispose(); correlationChart = null; }
-  if (pnlChart) { pnlChart.dispose(); pnlChart = null; }
+  disposeChart(correlationChart); correlationChart = null;
+  pnlChart.dispose();
+});
+
+// tab 切换后图表容器从 display:none 恢复，需要触发 resize 刷新尺寸
+watch(activeAnalyticsTab, (tab) => {
+  nextTick(() => {
+    if (tab === 'performance') pnlChart.resize();
+    if (tab === 'correlation') ensureChartResize(correlationChart);
+  });
 });
 </script>
 
