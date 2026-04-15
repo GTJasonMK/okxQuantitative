@@ -50,6 +50,14 @@ class FeatureBar1s:
     book_slope: float = 0.0
 
 
+def resolve_bar_price(bar: FeatureBar1s) -> float:
+    """按 close > mid > mark > index 优先级取第一个正价格。"""
+    for value in (bar.close_price, bar.mid_price, bar.mark_price, bar.index_price):
+        if float(value or 0.0) > 0.0:
+            return float(value)
+    return 0.0
+
+
 @dataclass(frozen=True)
 class TradeTickEvent:
     """逐笔成交事件。"""

@@ -3,7 +3,9 @@ from __future__ import annotations
 from math import log, sqrt
 from statistics import fmean
 
-from .models import ExtremaTarget, FeatureBar1s
+from .models import ExtremaTarget, FeatureBar1s, resolve_bar_price
+
+_resolve_price = resolve_bar_price
 
 
 SECONDS_PER_MINUTE = 60
@@ -11,13 +13,6 @@ DEFAULT_HORIZON_MINUTES = 60
 DEFAULT_VOLATILITY_WINDOW_SECONDS = 300
 MIN_REVERSAL_FLOOR = 0.002
 REVERSAL_SIGMA_MULTIPLIER = 2.0
-
-
-def _resolve_price(bar: FeatureBar1s) -> float:
-    for value in (bar.close_price, bar.mid_price, bar.mark_price, bar.index_price):
-        if float(value or 0.0) > 0.0:
-            return float(value)
-    return 0.0
 
 
 def _relative_gain(start_price: float, end_price: float) -> float:

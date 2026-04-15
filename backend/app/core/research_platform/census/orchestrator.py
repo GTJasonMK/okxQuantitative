@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .constants import normalize_inst_ids as _normalize_inst_ids
+
 
 class CensusOrchestrator:
     def __init__(self, *, scheduler, universe_provider, runtime_factory):
@@ -42,15 +44,3 @@ class CensusOrchestrator:
         self._runtimes.clear()
         for _, runtime in runtimes:
             await runtime.stop()
-
-
-def _normalize_inst_ids(inst_ids) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for inst_id in inst_ids or []:
-        value = str(inst_id or '').strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        normalized.append(value)
-    return normalized

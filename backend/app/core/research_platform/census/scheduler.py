@@ -4,6 +4,7 @@ import asyncio
 import time
 
 from ..dataset.constants import LABEL_WINDOW_SECONDS_15M
+from .constants import normalize_inst_ids as _normalize_inst_ids
 
 
 BOUNDARY_OBSERVATION_LAG_SECONDS = 1
@@ -90,15 +91,3 @@ def _seconds_until_next_due(now_ts: float) -> float:
     next_boundary = ((max(observed_ts, 0) // LABEL_WINDOW_SECONDS_15M) + 1) * LABEL_WINDOW_SECONDS_15M
     next_due_ts = next_boundary + BOUNDARY_OBSERVATION_LAG_SECONDS
     return max(next_due_ts - float(now_ts), MIN_POLL_SECONDS)
-
-
-def _normalize_inst_ids(inst_ids) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for inst_id in inst_ids or []:
-        value = str(inst_id or '').strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        normalized.append(value)
-    return normalized

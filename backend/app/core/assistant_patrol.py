@@ -28,12 +28,7 @@ def _utc_now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, min(maximum, numeric))
+from ..utils.numbers import clamp_int as _clamp_int
 
 
 def _clamp_float(value: Any, *, default: float, minimum: float, maximum: float) -> float:

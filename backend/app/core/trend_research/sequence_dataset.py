@@ -5,7 +5,7 @@ from statistics import fmean
 
 from .direct_models import DirectExtremaTarget, MinuteFeatureToken, OnlineSequenceWindow, SequenceSample
 from .factor_catalog import get_factor_definitions
-from .models import FeatureBar1s
+from .models import FeatureBar1s, resolve_bar_price
 from .research_runtime import build_raw_factor_columns
 
 
@@ -18,11 +18,7 @@ def _resolve_definitions(feature_names: tuple[str, ...]):
     return tuple(definitions[name] for name in feature_names if name in definitions)
 
 
-def _resolve_price(bar: FeatureBar1s) -> float:
-    for value in (bar.close_price, bar.mid_price, bar.mark_price, bar.index_price):
-        if float(value or 0.0) > 0.0:
-            return float(value)
-    return 0.0
+_resolve_price = resolve_bar_price
 
 
 def _resolve_high(bar: FeatureBar1s) -> float:

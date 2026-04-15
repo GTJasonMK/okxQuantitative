@@ -9,15 +9,7 @@ import numpy as np
 from .engine import BacktestResult, AccountState
 from ..strategies.base import Trade, OrderSide
 from ..utils.timeframes import periods_per_year as get_periods_per_year
-
-
-def _safe_float(value: float) -> float:
-    """将inf/nan转换为安全的有限浮点数，防止JSON序列化崩溃"""
-    if math.isinf(value):
-        return 9999.99 if value > 0 else -9999.99
-    if math.isnan(value):
-        return 0.0
-    return value
+from ..utils.numbers import safe_float_finite as _safe_float
 
 
 def calculate_metrics(result: BacktestResult) -> None:

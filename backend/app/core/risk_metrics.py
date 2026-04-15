@@ -7,14 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-
-def safe_float(value: float) -> float:
-    """将 inf/nan 转换为安全的有限浮点数"""
-    if math.isinf(value):
-        return 9999.99 if value > 0 else -9999.99
-    if math.isnan(value):
-        return 0.0
-    return value
+from ..utils.numbers import safe_float_finite as safe_float
 
 
 def calculate_returns(equities: List[float]) -> List[float]:

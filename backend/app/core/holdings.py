@@ -14,11 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 STABLECOINS = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP"}
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from ..utils.numbers import safe_float_convert as _safe_float
 
 
 def build_holdings_base(

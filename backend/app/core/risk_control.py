@@ -37,11 +37,7 @@ class RiskControlConfig:
     max_total_position_ratio: float = 1.0
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from ..utils.numbers import safe_float_convert as _safe_float
 
 
 def _clamp(value: Any, minimum: float, maximum: float, default: float) -> float:

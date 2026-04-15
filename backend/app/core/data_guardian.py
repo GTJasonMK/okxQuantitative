@@ -45,12 +45,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, min(maximum, numeric))
+from ..utils.numbers import clamp_int as _clamp_int
 
 
 def _sort_plans(plans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

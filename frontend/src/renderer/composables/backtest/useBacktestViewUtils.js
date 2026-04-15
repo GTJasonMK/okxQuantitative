@@ -1,5 +1,5 @@
 import { computed } from 'vue';
-import { formatPrice } from '@/utils/formatting';
+import { formatPrice, formatPercentValue } from '@/utils/formatting';
 
 export function useBacktestViewUtils(deps) {
   const {
@@ -442,9 +442,7 @@ export function useBacktestViewUtils(deps) {
     }).format(numeric);
   }
 
-  function formatPercent(value) {
-    return `${safeNum(value).toFixed(2)}%`;
-  }
+  const formatPercent = (value) => formatPercentValue(safeNum(value));
 
   function formatRatio(value) {
     const numeric = safeNum(value, NaN);

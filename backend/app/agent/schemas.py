@@ -5,12 +5,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..models.schemas import InstTypeEnum
 
-class AgentInstTypeEnum(str, Enum):
-    SPOT = "SPOT"
-    SWAP = "SWAP"
-    FUTURES = "FUTURES"
-    OPTION = "OPTION"
+AgentInstTypeEnum = InstTypeEnum
 
 
 class AgentModeEnum(str, Enum):

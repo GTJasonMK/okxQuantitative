@@ -129,12 +129,7 @@ class MarketTrade:
         }
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    """安全转换浮点数，异常时返回默认值。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from ..utils.numbers import safe_float_convert as _safe_float
 
 
 def _safe_int(value: Any, default: int = 0) -> int:

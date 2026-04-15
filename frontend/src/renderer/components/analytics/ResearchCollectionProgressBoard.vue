@@ -32,6 +32,7 @@
 
 <script setup>
 import { computed } from 'vue';
+import { formatPercentValue } from '../../utils/formatting.js';
 
 const FULL_WINDOW_SECONDS = 7200;
 const BOUNDARY_SECONDS = 900;
@@ -85,7 +86,7 @@ function buildBar(label, currentValue, totalValue, valueLabel) {
 }
 
 function formatPercent(value) {
-  return `${(Number(value || 0) * 100).toFixed(2)}%`;
+  return formatPercentValue(Number(value || 0) * 100);
 }
 
 function formatSeconds(value) {

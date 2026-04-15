@@ -131,11 +131,7 @@ def _serialize_indicator_payload(name: str, series: Any, params: Optional[Dict[s
     }
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+from ..utils.numbers import safe_float_convert as _safe_float
 
 
 def _utc_now() -> datetime:

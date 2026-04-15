@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import exp
 
-from .models import FeatureBar1s, TrendInferenceSnapshot
+from .models import FeatureBar1s, TrendInferenceSnapshot, resolve_bar_price
 from .sequence_dataset import build_online_sequence_window
 
 
@@ -32,11 +32,7 @@ def _resolve_trend_state(trend_score: float) -> str:
     return "range"
 
 
-def _resolve_price(bar: FeatureBar1s) -> float:
-    for value in (bar.close_price, bar.mid_price, bar.mark_price, bar.index_price):
-        if float(value or 0.0) > 0.0:
-            return float(value)
-    return 0.0
+_resolve_price = resolve_bar_price
 
 
 def _resolve_eta_seconds(bucket_index: int | None, bucket_seconds: int) -> int | None:

@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 import time
 from typing import Any
 
-
-def _to_dict(value: Any) -> dict:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return dict(value)
-    if is_dataclass(value):
-        return asdict(value)
-    return dict(getattr(value, "__dict__", {}))
+from .diagnostics_models import model_to_dict
 
 
 def _stage(ready: bool, waiting_label: str, ready_label: str) -> dict:
@@ -59,9 +50,9 @@ def _resolve_recent_feature_bars(service, inst_id: str, limit: int, *, prefer_ca
         cached_rows = list(getattr(service, "_recent_bars_by_inst", {}).get(inst_id, ()))
         if not cached_rows:
             return []
-        return [_to_dict(bar) for bar in cached_rows[-limit:]]
+        return [model_to_dict(bar) for bar in cached_rows[-limit:]]
     return [
-        _to_dict(bar)
+        model_to_dict(bar)
         for bar in reversed(service.storage.list_feature_bars_1s(inst_id, limit=limit))
     ]
 
@@ -90,7 +81,7 @@ def build_trend_process_snapshot(service, *, bar_limit: int = 20, prefer_cache: 
     for inst_id in whitelist:
         builder = service.builders.get(inst_id)
         runtime = _with_age(
-            _to_dict(builder.build_runtime_snapshot()) if builder is not None else {
+            model_to_dict(builder.build_runtime_snapshot()) if builder is not None else {
                 "inst_id": inst_id,
                 "has_trade_input": False,
                 "has_book_input": False,
@@ -111,7 +102,7 @@ def build_trend_process_snapshot(service, *, bar_limit: int = 20, prefer_cache: 
             prefer_cache=prefer_cache,
         )
         latest_feature_bar = recent_feature_bars[-1] if recent_feature_bars else {}
-        latest_inference = _to_dict(latest_inference_by_inst.get(inst_id))
+        latest_inference = model_to_dict(latest_inference_by_inst.get(inst_id))
         stages = _build_stages(runtime, latest_feature_bar, latest_inference)
         summary["trade_ready_count"] += int(stages["trade"]["ready"])
         summary["book_ready_count"] += int(stages["book"]["ready"])
