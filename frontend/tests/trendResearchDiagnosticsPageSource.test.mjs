@@ -15,10 +15,13 @@ test('diagnostics page mounts dedicated diagnostics workspace shell with explici
   assert.match(source, /useTrendDiagnosticsWorkspace/);
   assert.match(source, /TrendDiagnosticsShell/);
   assert.match(source, /instId/);
+  assert.match(source, /processSummary/);
+  assert.match(source, /selectedProcessInstrument/);
   assert.match(source, /defineEmits\(\['select-inst'\]\)/);
   assert.match(source, /emit\('select-inst'/);
   assert.doesNotMatch(source, /TrendResearchProcessDiagnostics/);
   assert.match(source, /empty-state/);
+  assert.match(source, /暂无运行进度数据/);
 });
 
 test('diagnostics shell reuses the shared parent switcher instead of rendering an internal picker', () => {

@@ -84,3 +84,28 @@ test('diagnostics reducer updates health summary for incremental trade events', 
   assert.equal(next.details.pending_trade_count, 1);
   assert.equal(next.timeline[0].kind, 'trade');
 });
+
+test('diagnostics reducer dedupes repeated timeline entries from snapshots and incremental updates', () => {
+  const repeatedEntry = {
+    sequence: 1398,
+    kind: 'book',
+    label: '收到新的盘口快照',
+    emitted_at: 1712365300,
+  };
+  const state = buildTrendDiagnosticsState({
+    selected_inst_id: 'BTC-USDT-SWAP',
+    timeline: [repeatedEntry, repeatedEntry],
+  });
+
+  const next = applyTrendDiagnosticsEvent(state, {
+    event_type: 'timeline_appended',
+    inst_id: 'BTC-USDT-SWAP',
+    payload: {
+      timeline_entry: repeatedEntry,
+    },
+  });
+
+  assert.equal(state.timeline.length, 1);
+  assert.equal(next.timeline.length, 1);
+  assert.equal(next.timeline[0].sequence, 1398);
+});

@@ -1,0 +1,96 @@
+<h2>数据中心如何吸收采集页？</h2>
+<p class="subtitle">先只决定导航层级，不讨论字段细节。我推荐 A。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. 数据中心新增独立标签</div>
+        <div class="mockup-body">
+          <div class="mock-nav">数据中心</div>
+          <div style="display:flex; gap:8px; margin-bottom:12px;">
+            <button class="mock-button">关注币种</button>
+            <button class="mock-button" style="background:#ea580c;">秒级采集</button>
+            <button class="mock-button">数据库库存</button>
+          </div>
+          <div class="mock-content">
+            采集会话列表 + 当前运行卡片 + 质量指标 + 会话可视化
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 独立“秒级采集”标签</h3>
+      <p>采集成为数据中心的上游入口，关注、采集、库存三段式结构最清晰。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. 并入关注币种页</div>
+        <div class="mockup-body">
+          <div class="mock-nav">数据中心</div>
+          <div style="display:flex; gap:8px; margin-bottom:12px;">
+            <button class="mock-button" style="background:#ea580c;">关注币种</button>
+            <button class="mock-button">数据库库存</button>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <div class="mock-sidebar">币种列表</div>
+            <div class="mock-content">右侧增加采集控制区 + 会话历史</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 并入“关注币种”页</h3>
+      <p>入口更集中，但页面职责会变重，后续会话可视化和质量面板容易拥挤。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. 数据中心重做成总览首页</div>
+        <div class="mockup-body">
+          <div class="mock-nav">数据中心总览</div>
+          <div class="split">
+            <div class="mockup">
+              <div class="mockup-header">采集</div>
+              <div class="mockup-body">当前会话 / 按钮 / 质量</div>
+            </div>
+            <div class="mockup">
+              <div class="mockup-header">库存</div>
+              <div class="mockup-body">覆盖率 / 孤儿 / 清理</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 重做数据中心总览首页</h3>
+      <p>长期上限高，但这次改造范围会明显扩大，不适合先落地主链路。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">我的建议</div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>推荐 A 的原因</h4>
+      <ul>
+        <li>符合“原始数据入口在数据中心，研究与训练在研究平台”的边界</li>
+        <li>最少打断现有 watchlist / inventory 页面结构</li>
+        <li>后续增加会话质量、秒条可视化、采集历史更自然</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>A 的代价</h4>
+      <ul>
+        <li>数据中心从 2 个标签扩成 3 个标签</li>
+        <li>需要把当前采集相关组件与 workspace 挪位</li>
+      </ul>
+    </div>
+  </div>
+</div>

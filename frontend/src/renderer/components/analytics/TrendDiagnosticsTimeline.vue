@@ -2,16 +2,16 @@
   <section class="trend-diagnostics-card trend-diagnostics-timeline">
     <header class="trend-diagnostics-block-header">
       <div>
-        <p class="trend-diagnostics-eyebrow">实时事件</p>
-        <h4>诊断时间线</h4>
+        <p class="trend-diagnostics-eyebrow">证据回放</p>
+        <h4>最近关键事件</h4>
       </div>
-      <span class="trend-diagnostics-block-caption">按事件顺序解释“为什么不刷新”</span>
+      <span class="trend-diagnostics-block-caption">按顺序回放最近发生了什么</span>
     </header>
 
     <div v-if="timelineItems.length > 0" class="trend-diagnostics-timeline-list">
       <article
         v-for="item in timelineItems"
-        :key="item.sequence || `${item.kind}-${item.emitted_at}`"
+        :key="resolveTimelineItemKey(item)"
         class="trend-diagnostics-timeline-item"
       >
         <span class="trend-diagnostics-timeline-dot" :class="`tone-${resolveTimelineTone(item.kind)}`"></span>
@@ -34,6 +34,7 @@
 <script setup>
 import { computed } from 'vue';
 
+import { resolveTrendDiagnosticsTimelineKey } from './trendDiagnosticsTimelineIdentity.mjs';
 import {
   formatUnixSeconds,
   resolveTimelineCaption,
@@ -54,6 +55,10 @@ const props = defineProps({
 const timelineItems = computed(() => {
   return [...props.items].reverse();
 });
+
+const resolveTimelineItemKey = (item) => {
+  return resolveTrendDiagnosticsTimelineKey(item);
+};
 </script>
 
 <style scoped src="./trendDiagnostics.css"></style>

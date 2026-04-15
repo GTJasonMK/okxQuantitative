@@ -1,11 +1,23 @@
+import { resolveTrendDiagnosticsTimelineKey } from './trendDiagnosticsTimelineIdentity.mjs';
+
 const DEFAULT_TIMELINE_LIMIT = 80;
 
 const normalizeArray = (value) => {
   return Array.isArray(value) ? value : [];
 };
 
+const dedupeTimeline = (timeline) => {
+  const deduped = new Map();
+  for (const entry of normalizeArray(timeline)) {
+    const key = resolveTrendDiagnosticsTimelineKey(entry);
+    deduped.delete(key);
+    deduped.set(key, entry);
+  }
+  return [...deduped.values()];
+};
+
 const trimTimeline = (timeline, limit = DEFAULT_TIMELINE_LIMIT) => {
-  return normalizeArray(timeline).slice(-limit);
+  return dedupeTimeline(timeline).slice(-limit);
 };
 
 export const buildTrendDiagnosticsState = (payload = {}) => {

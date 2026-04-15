@@ -65,6 +65,8 @@ test('buildTrendProcessPanelModel summarizes process readiness and instrument ca
 
   assert.equal(panel.summaryCards[0].value, '2');
   assert.equal(panel.summaryCards[5].value, '1');
+  assert.equal(panel.summaryStats.inference_ready_count, 1);
+  assert.equal(panel.instruments[0].pipelineState, 'inference_ready');
   assert.equal(panel.instruments[0].displayState, '推断完成');
   assert.equal(panel.instruments[0].featureStats[0].value, '12');
   assert.equal(panel.instruments[0].runtimeStats[0].label, '待处理逐笔');

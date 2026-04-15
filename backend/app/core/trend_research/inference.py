@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from math import exp
 
-from .direct_training import run_direct_model
 from .models import FeatureBar1s, TrendInferenceSnapshot
 from .sequence_dataset import build_online_sequence_window
 
@@ -61,6 +60,12 @@ def _resolve_confidence(*, top_distribution: tuple[float, ...], bottom_distribut
 def _resolve_trend_score(top_return: float, bottom_return: float) -> float:
     raw_score = (float(top_return) + float(bottom_return)) * TREND_SCORE_SCALE
     return max(min(raw_score, 100.0), -100.0)
+
+
+def _run_direct_model(window, bundle):
+    from .direct_training import run_direct_model
+
+    return run_direct_model(window, bundle)
 
 
 class TrendInferenceEngine:
@@ -127,7 +132,7 @@ class TrendInferenceEngine:
             feature_names=config.feature_names,
             input_minutes=config.input_minutes,
         )
-        prediction = run_direct_model(window, self._model_bundle)
+        prediction = _run_direct_model(window, self._model_bundle)
         trend_score = _resolve_trend_score(prediction.top_return, prediction.bottom_return)
         confidence = _resolve_confidence(
             top_distribution=prediction.top_distribution,

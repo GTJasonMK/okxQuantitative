@@ -1,4 +1,4 @@
-import { formatDateTime } from '../../utils/formatting';
+import { formatDateTime } from '../../utils/formatting.js';
 
 const PIPELINE_STAGE_LABELS = Object.freeze({
   waiting_trade: '等待 Trade',

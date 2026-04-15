@@ -2,6 +2,7 @@ from __future__ import annotations
 
 BASIS_BPS_MULTIPLIER = 10000.0
 MULTI_LEVEL_MIN_LEVELS = 2
+DEPTH_WINDOW_BPS = 10.0
 
 from .models import (
     BookTopEvent,
@@ -167,6 +168,22 @@ class FeatureBarBuilder:
         imbalance = (bid_depth - ask_depth) / total_depth if total_depth > 0.0 else 0.0
         return min(len(bid_levels), len(ask_levels)), imbalance, self._compute_book_slope(bid_levels, ask_levels)
 
+    def _resolve_depth_10bps(self, mid_price: float) -> tuple[float, float]:
+        if self._book is None or mid_price <= 0.0:
+            return 0.0, 0.0
+        max_distance = mid_price * (DEPTH_WINDOW_BPS / BASIS_BPS_MULTIPLIER)
+        bid_depth = sum(
+            size
+            for price, size in tuple(self._book.bid_levels or ())
+            if (mid_price - price) <= max_distance
+        )
+        ask_depth = sum(
+            size
+            for price, size in tuple(self._book.ask_levels or ())
+            if (price - mid_price) <= max_distance
+        )
+        return bid_depth, ask_depth
+
     def _compute_book_slope(self, bid_levels, ask_levels) -> float:
         near_depth = bid_levels[0][1] + ask_levels[0][1]
         if near_depth <= 0.0:
@@ -196,6 +213,7 @@ class FeatureBarBuilder:
         data_quality = "ok" if self._book and self._contract_state else "partial"
         open_price, high_price, low_price, close_price = self._resolve_price_path(mid_price)
         book_level_count, multi_level_book_imbalance, book_slope = self._resolve_multi_level_features()
+        bid_depth_10bps, ask_depth_10bps = self._resolve_depth_10bps(mid_price)
         bar = FeatureBar1s(
             inst_id=self._inst_id,
             ts_exchange=float(second_bucket),
@@ -214,6 +232,8 @@ class FeatureBarBuilder:
             ask_price=ask_price,
             bid_size=bid_size,
             ask_size=ask_size,
+            bid_depth_10bps=bid_depth_10bps,
+            ask_depth_10bps=ask_depth_10bps,
             buy_notional=self._buy_notional,
             sell_notional=self._sell_notional,
             buy_count=self._buy_count,

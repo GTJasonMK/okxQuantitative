@@ -93,6 +93,7 @@ const buildInstrumentCard = (instrument = {}) => {
 
   return {
     instId: instrument.inst_id || '--',
+    pipelineState: instrument.pipeline_state || '',
     displayState: PROCESS_STATE_LABELS[instrument.pipeline_state] || '采集中',
     stages: buildStageRows(instrument.stages),
     runtime: instrument.runtime || {},
@@ -130,6 +131,14 @@ export const buildTrendProcessPanelModel = (payload = {}) => {
 
   return {
     summaryCards: buildSummaryCards(payload.summary),
+    summaryStats: {
+      whitelist_count: Number(payload.summary?.whitelist_count || 0),
+      trade_ready_count: Number(payload.summary?.trade_ready_count || 0),
+      book_ready_count: Number(payload.summary?.book_ready_count || 0),
+      state_ready_count: Number(payload.summary?.state_ready_count || 0),
+      feature_ready_count: Number(payload.summary?.feature_ready_count || 0),
+      inference_ready_count: Number(payload.summary?.inference_ready_count || 0),
+    },
     instruments: instruments.map(buildInstrumentCard),
     barLimit: Number(payload.bar_limit || 0),
   };

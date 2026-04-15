@@ -26,6 +26,7 @@ def get_trend_research_service(ctx) -> TrendResearchService:
                 cfg = ctx.cfg.trend_research
                 defaults = build_default_trend_research_settings(cfg)
                 settings = load_trend_research_settings(cfg)
+                model_bundle = _load_initial_model_bundle()
                 _service = TrendResearchService(
                     whitelist=settings["whitelist"],
                     storage=ctx.storage(),
@@ -38,7 +39,15 @@ def get_trend_research_service(ctx) -> TrendResearchService:
                     enabled=settings["enabled"],
                     defaults=defaults,
                     cfg=cfg,
-                    model_bundle=_load_saved_model_bundle(),
+                    model_bundle=model_bundle,
                 )
                 ctx.add_ws_restart_listener(_service.on_ws_manager_restart)
     return _service
+
+
+def _load_initial_model_bundle():
+    try:
+        return _load_saved_model_bundle()
+    except RuntimeError as exc:
+        print(f"[TrendResearch] saved direct model unavailable: {exc}")
+        return None

@@ -5,7 +5,6 @@ import time
 from threading import Lock
 from typing import Callable
 
-from .direct_training import DEFAULT_EPOCHS
 from .diagnostics_projector import TrendDiagnosticsProjector
 from .feature_builder import FeatureBarBuilder
 from .inference import TrendInferenceEngine
@@ -15,7 +14,7 @@ from .research_runtime import DEFAULT_FACTOR_LIMIT, DEFAULT_FACTOR_LOOKBACK, bui
 from .runtime_service import TrendResearchRuntime
 from .service_support import append_recent_bar, build_contract_state_snapshot, cancel_task, row_inst_id, settings_dict, sort_inference_rows
 from .settings import normalize_trend_research_settings, save_trend_research_settings
-from .training_runtime import retrain_model_from_storage
+from .training_constants import DEFAULT_EPOCHS
 from .training_tracker import TrendTrainingTracker
 
 DEFAULT_RECENT_BAR_LIMIT = 7200
@@ -598,6 +597,8 @@ class TrendResearchService:
         return self.get_training_run()
 
     async def _run_retrain_model_async(self, lookback: int):
+        from .training_runtime import retrain_model_from_storage
+
         try:
             bundle = await asyncio.to_thread(
                 retrain_model_from_storage,
@@ -630,6 +631,8 @@ class TrendResearchService:
             self._training_loop = None
 
     def retrain_model(self, *, lookback: int = DEFAULT_FACTOR_LOOKBACK):
+        from .training_runtime import retrain_model_from_storage
+
         bundle = retrain_model_from_storage(
             self.storage,
             tuple(self.whitelist),

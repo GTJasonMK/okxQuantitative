@@ -17,8 +17,6 @@ from .models import (
     TrendInferenceSnapshot,
     TradeTickEvent,
 )
-from .factory import get_trend_research_service
-from .service import TrendResearchService
 
 __all__ = [
     "BookTopEvent",
@@ -34,8 +32,6 @@ __all__ = [
     "OnlineSequenceWindow",
     "SequenceSample",
     "SwingLabel",
-    "TrendResearchService",
     "TrendInferenceSnapshot",
     "TradeTickEvent",
-    "get_trend_research_service",
 ]

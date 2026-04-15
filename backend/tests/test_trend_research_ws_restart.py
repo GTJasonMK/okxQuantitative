@@ -81,3 +81,48 @@ def test_trend_research_factory_registers_ws_restart_listener(monkeypatch):
     assert listeners[0].__name__ == "on_ws_manager_restart"
 
     factory_mod._service = None
+
+
+def test_trend_research_factory_skips_unloadable_saved_model_bundle(monkeypatch, capsys):
+    factory_mod._service = None
+    listeners = []
+    ws_manager = FakeWSManager()
+
+    defaults = {
+        "enabled": True,
+        "whitelist": ["BTC-USDT-SWAP"],
+        "feature_bar_seconds": 1,
+        "state_sync_seconds": 30,
+        "book_channel": "books5",
+    }
+
+    class DummyContext:
+        cfg = SimpleNamespace(trend_research=SimpleNamespace())
+
+        def storage(self):
+            return FakeStorage()
+
+        def fetcher(self):
+            return FakeFetcher()
+
+        def ws_manager(self):
+            return ws_manager
+
+        def add_ws_restart_listener(self, listener):
+            listeners.append(listener)
+
+    def _raise_bundle_error():
+        raise RuntimeError("torch import failed")
+
+    monkeypatch.setattr(factory_mod, "build_default_trend_research_settings", lambda cfg: defaults)
+    monkeypatch.setattr(factory_mod, "load_trend_research_settings", lambda cfg: defaults)
+    monkeypatch.setattr(factory_mod, "_load_saved_model_bundle", _raise_bundle_error)
+
+    service = factory_mod.get_trend_research_service(DummyContext())
+
+    assert service.get_model_status()["ready"] is False
+    assert len(listeners) == 1
+    captured = capsys.readouterr()
+    assert "saved direct model unavailable" in captured.out
+
+    factory_mod._service = None

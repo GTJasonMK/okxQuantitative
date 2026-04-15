@@ -5,7 +5,7 @@ TORCH_IMPORT_ERROR = None
 try:
     import torch
     from torch import nn
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised in dependency-missing tests
+except Exception as exc:  # pragma: no cover - exercised in dependency-missing tests
     torch = None
     nn = None
     TORCH_IMPORT_ERROR = exc

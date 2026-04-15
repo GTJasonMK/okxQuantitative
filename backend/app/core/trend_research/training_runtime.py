@@ -3,10 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from .direct_models import DirectExtremaModelConfig
-from .direct_training import DEFAULT_EPOCHS, build_time_splits, train_direct_extrema_model
+from .direct_training import build_time_splits, train_direct_extrema_model
 from .model_store import save_direct_model_bundle
 from .research_runtime import build_raw_factor_columns
 from .sequence_dataset import build_sequence_samples
+from .training_constants import DEFAULT_EPOCHS
 
 
 DEFAULT_MODEL_INPUT_MINUTES = 120

@@ -24,6 +24,8 @@ class FeatureBar1s:
     ask_price: float = 0.0
     bid_size: float = 0.0
     ask_size: float = 0.0
+    bid_depth_10bps: float = 0.0
+    ask_depth_10bps: float = 0.0
     buy_notional: float = 0.0
     sell_notional: float = 0.0
     buy_count: int = 0

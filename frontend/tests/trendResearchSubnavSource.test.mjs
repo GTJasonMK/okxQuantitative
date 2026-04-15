@@ -11,7 +11,7 @@ test('TrendResearchSubnav exposes the four approved task pages', () => {
   assert.match(source, /结论总览/);
   assert.match(source, /因子分析/);
   assert.match(source, /训练模型/);
-  assert.match(source, /过程诊断/);
+  assert.match(source, /运行进度/);
   assert.match(source, /defineEmits/);
   assert.match(source, /update:modelValue/);
 });

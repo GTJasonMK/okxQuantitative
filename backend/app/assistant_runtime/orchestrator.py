@@ -96,6 +96,65 @@ def _extract_text_content(content: Any) -> str:
     return "".join(chunks)
 
 
+def _sanitize_completion_history(items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sanitized: List[Dict[str, Any]] = []
+    index = 0
+
+    while index < len(items):
+        item = items[index]
+        role = item.get("role")
+        metadata = item.get("metadata") or {}
+        tool_calls = metadata.get("tool_calls")
+
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            next_index = index + 1
+            tool_rows: List[Dict[str, Any]] = []
+            while next_index < len(items) and items[next_index].get("role") == "tool":
+                tool_rows.append(items[next_index])
+                next_index += 1
+
+            matched_tool_ids = {
+                str(tool_row.get("tool_call_id") or "").strip()
+                for tool_row in tool_rows
+                if str(tool_row.get("tool_call_id") or "").strip()
+            }
+            valid_tool_calls = [
+                tool_call
+                for tool_call in tool_calls
+                if str((tool_call or {}).get("id") or "").strip() in matched_tool_ids
+            ]
+            if valid_tool_calls:
+                sanitized.append({
+                    "role": "assistant",
+                    "content": item.get("content") or "",
+                    "tool_calls": valid_tool_calls,
+                })
+                emitted_tool_ids: set[str] = set()
+                for tool_row in tool_rows:
+                    tool_call_id = str(tool_row.get("tool_call_id") or "").strip()
+                    if not tool_call_id or tool_call_id in emitted_tool_ids:
+                        continue
+                    if tool_call_id not in matched_tool_ids:
+                        continue
+                    emitted_tool_ids.add(tool_call_id)
+                    sanitized.append({
+                        "role": "tool",
+                        "content": tool_row.get("content") or "",
+                        "tool_call_id": tool_call_id,
+                    })
+            index = next_index
+            continue
+
+        if role != "tool":
+            sanitized.append({
+                "role": role,
+                "content": item.get("content") or "",
+            })
+        index += 1
+
+    return sanitized
+
+
 def _append_stream_tool_call_buffer(
     tool_call_buffers: List[Dict[str, Any]],
     delta_tool_calls: Any,
@@ -1128,23 +1187,9 @@ class AssistantOrchestrator:
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ]
-        for item in self.storage.get_assistant_messages(session_id):
-            role = item["role"]
-            metadata = item.get("metadata") or {}
-            if role == "tool":
-                messages.append({
-                    "role": "tool",
-                    "content": item["content"],
-                    "tool_call_id": item["tool_call_id"],
-                })
-                continue
-            message_payload: Dict[str, Any] = {
-                "role": role,
-                "content": item["content"],
-            }
-            if role == "assistant" and isinstance(metadata.get("tool_calls"), list) and metadata["tool_calls"]:
-                message_payload["tool_calls"] = metadata["tool_calls"]
-            messages.append(message_payload)
+        messages.extend(
+            _sanitize_completion_history(self.storage.get_assistant_messages(session_id))
+        )
         if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != user_message:
             messages.append({"role": "user", "content": user_message})
         return messages
@@ -1202,6 +1247,30 @@ class AssistantOrchestrator:
             "tool_calls": tool_calls,
         })
 
+    def _append_tool_message(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        call_id: str,
+        serialized_content: str,
+        messages: List[Dict[str, Any]],
+        metadata: Dict[str, Any],
+    ) -> None:
+        self.storage.append_assistant_message(
+            session_id,
+            role="tool",
+            content=serialized_content,
+            tool_name=tool_name,
+            tool_call_id=call_id,
+            metadata=metadata,
+        )
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": serialized_content,
+        })
+
     def _execute_tool_calls(
         self,
         *,
@@ -1246,19 +1315,14 @@ class AssistantOrchestrator:
                     output_payload=step_record["output"],
                     error_text="",
                 )
-                self.storage.append_assistant_message(
-                    session_id,
-                    role="tool",
-                    content=serialized_output,
+                self._append_tool_message(
+                    session_id=session_id,
                     tool_name=tool_name,
-                    tool_call_id=call_id,
+                    call_id=call_id,
+                    serialized_content=serialized_output,
+                    messages=messages,
                     metadata={"summary": step_record["output"]},
                 )
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": serialized_output,
-                })
                 tool_steps.append(step_record)
             except AssistantOrchestratorError as exc:
                 error_text = str(exc)
@@ -1269,6 +1333,20 @@ class AssistantOrchestrator:
                     tool_name=tool_name,
                     output_payload={},
                     error_text=error_text,
+                )
+                self._append_tool_message(
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    call_id=call_id,
+                    serialized_content=json.dumps(
+                        {
+                            "error": error_text,
+                            "tool_name": tool_name,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    messages=messages,
+                    metadata={"error": error_text},
                 )
                 self.storage.update_assistant_session(session_id, status="failed", last_error=error_text)
                 raise

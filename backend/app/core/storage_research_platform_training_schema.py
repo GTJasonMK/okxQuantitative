@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+
+TRAINING_RUN_COLUMNS = (
+    'run_id',
+    'dataset_id',
+    'model_family',
+    'model_spec_ref',
+    'candidate_set_ref',
+    'training_seed',
+    'status',
+    'progress_stage',
+    'failure_reason',
+    'split_definition_version',
+    'evaluation_protocol_version',
+    'refit_policy_version',
+    'outer_origin_selection_policy',
+    'weighting_version',
+    'weight_definition',
+    'weight_estimator_version',
+    'weight_fit_ref',
+    'domain_classifier_version',
+    'domain_classifier_fit_ref',
+    'score_definition_version',
+    'prerank_definition_version',
+    'regime_definition_version',
+    'bootstrap_definition_version',
+    'policy_definition_version',
+    'policy_parameter_ref',
+    'decision_utility_version',
+    'utility_parameter_ref',
+    'execution_assumption_version',
+    'multiple_comparison_version',
+    'split_artifact_ref',
+    'forecast_metrics_ref',
+    'decision_metrics_ref',
+    'diagnostics_ref',
+    'bootstrap_result_ref',
+    'baseline_result_ref',
+    'comparison_result_ref',
+    'created_at',
+    'started_at',
+    'finished_at',
+)
+
+
+TRAINING_RUN_COLUMN_DEFS = (
+    ('regime_definition_version', "TEXT NOT NULL DEFAULT ''"),
+    ('outer_origin_selection_policy', "TEXT NOT NULL DEFAULT ''"),
+)

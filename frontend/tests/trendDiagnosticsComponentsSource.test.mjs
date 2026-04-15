@@ -2,8 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const summarySource = fs.readFileSync(
-  new URL('../src/renderer/components/analytics/TrendDiagnosticsHealthSummary.vue', import.meta.url),
+const shellSource = fs.readFileSync(
+  new URL('../src/renderer/components/analytics/TrendDiagnosticsShell.vue', import.meta.url),
+  'utf8',
+);
+const timelineSource = fs.readFileSync(
+  new URL('../src/renderer/components/analytics/TrendDiagnosticsTimeline.vue', import.meta.url),
   'utf8',
 );
 const detailsSource = fs.readFileSync(
@@ -11,16 +15,24 @@ const detailsSource = fs.readFileSync(
   'utf8',
 );
 
-test('health summary distinguishes selected instrument events from snapshot heartbeat', () => {
-  assert.match(summarySource, /全局停滞/);
-  assert.match(summarySource, /当前合约最近事件/);
-  assert.match(summarySource, /最近快照/);
-  assert.match(summarySource, /当前只有诊断快照在刷新/);
-  assert.match(summarySource, /props\.instrumentHealth\.last_event_at/);
-  assert.match(summarySource, /props\.emittedAt/);
+test('diagnostics shell is reorganized into a progress dashboard before the timeline and details', () => {
+  assert.match(shellSource, /TrendProgressOverviewStrip/);
+  assert.match(shellSource, /TrendProgressConclusionCard/);
+  assert.match(shellSource, /TrendProgressPipeline/);
+  assert.match(shellSource, /TrendProgressEvidenceCards/);
+  assert.match(shellSource, /TrendDiagnosticsTimeline/);
+  assert.match(shellSource, /TrendDiagnosticsDetails/);
+  assert.doesNotMatch(shellSource, /TrendDiagnosticsHealthSummary/);
+  assert.match(shellSource, /buildTrendProgressDashboardModel/);
 });
 
-test('details panel exposes instrument event, global event and snapshot timestamps separately', () => {
+test('timeline is reframed as recent key events instead of a primary diagnostics headline', () => {
+  assert.match(timelineSource, /最近关键事件/);
+  assert.match(timelineSource, /证据回放/);
+});
+
+test('details panel is explicitly presented as advanced diagnostics', () => {
+  assert.match(detailsSource, /高级诊断明细/);
   assert.match(detailsSource, /当前合约最近事件/);
   assert.match(detailsSource, /全局最近事件/);
   assert.match(detailsSource, /最近诊断快照/);

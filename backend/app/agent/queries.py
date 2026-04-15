@@ -199,6 +199,11 @@ def _resolve_analysis_inst_id(symbol: str, inst_type: str) -> str:
     return normalized_symbol
 
 
+def _resolve_query_inst_id(inst_id: str, inst_type: Optional[str]) -> tuple[str, str]:
+    normalized_inst_type = _normalize_inst_type(inst_id, inst_type)
+    return _resolve_analysis_inst_id(inst_id, normalized_inst_type), normalized_inst_type
+
+
 def _pearson_correlation(left: List[float], right: List[float]) -> float:
     if len(left) != len(right) or len(left) < 2:
         return 0.0
@@ -477,17 +482,17 @@ class AgentQueryService:
         return [item.model_dump() for item in capabilities]
 
     def get_market_snapshot(self, request: AgentMarketQueryRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         fetcher = self.ctx.fetcher()
         storage = self.ctx.storage()
 
         ticker = None
         if fetcher:
-            ticker = fetcher.get_ticker_cached(request.inst_id, inst_type)
+            ticker = fetcher.get_ticker_cached(resolved_inst_id, inst_type)
         if ticker is None:
-            ticker = storage.get_latest_ticker(request.inst_id, inst_type=inst_type)
+            ticker = storage.get_latest_ticker(resolved_inst_id, inst_type=inst_type)
         if ticker is None:
-            raise ValueError(f"未找到 {request.inst_id} 的行情快照")
+            raise ValueError(f"未找到 {resolved_inst_id or request.inst_id} 的行情快照")
 
         spread = float(getattr(ticker, "ask_px", 0) or 0) - float(getattr(ticker, "bid_px", 0) or 0)
         mid_price = (
@@ -499,7 +504,7 @@ class AgentQueryService:
 
         ticker_payload = _safe_json_value(ticker.to_dict() if hasattr(ticker, "to_dict") else ticker)
         return {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "ticker": ticker_payload,
             "price_summary": {
@@ -774,16 +779,16 @@ class AgentQueryService:
         }
 
     def get_multi_timeframe_candles(self, request: AgentCandleQueryRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         payload: Dict[str, Any] = {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "timeframes": {},
         }
 
         for timeframe in [_normalize_timeframe(item) for item in request.timeframes]:
             candles = self._load_candles(
-                inst_id=request.inst_id,
+                inst_id=resolved_inst_id,
                 inst_type=inst_type,
                 timeframe=timeframe,
                 limit=request.limit,
@@ -844,21 +849,32 @@ class AgentQueryService:
         if alias_lower.startswith("volume_ma"):
             period = extract_period("volume_ma", default=20)
             return _serialize_indicator_payload(indicator_name, calculator.volume_ma(period), {"period": period})
+        if alias_lower.startswith("vwap"):
+            period = extract_period("vwap")
+            return _serialize_indicator_payload(
+                indicator_name,
+                calculator.vwap(period),
+                {
+                    "period": period,
+                    "mode": "rolling" if period is not None else "cumulative",
+                    "source": "hlc3",
+                },
+            )
 
         raise ValueError(f"不支持的指标: {indicator_name}")
 
     def get_indicator_snapshot(self, request: AgentIndicatorQueryRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         timeframe = _normalize_timeframe(request.timeframe)
         candles = self._load_candles(
-            inst_id=request.inst_id,
+            inst_id=resolved_inst_id,
             inst_type=inst_type,
             timeframe=timeframe,
             limit=request.limit,
             auto_sync=request.auto_sync,
         )
         if not candles:
-            raise ValueError(f"未找到 {request.inst_id} {timeframe} 的 K 线数据")
+            raise ValueError(f"未找到 {resolved_inst_id or request.inst_id} {timeframe} 的 K 线数据")
 
         calculator = IndicatorCalculator(candles)
         indicator_payload = {
@@ -867,7 +883,7 @@ class AgentQueryService:
         }
         serialized_candles = [_serialize_candle(item) for item in candles]
         return {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "timeframe": timeframe,
             "candles": serialized_candles,
@@ -875,11 +891,12 @@ class AgentQueryService:
         }
 
     def get_orderbook_snapshot(self, request: AgentOrderBookQueryRequest) -> Dict[str, Any]:
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         fetcher = self.ctx.fetcher()
         if not fetcher:
             return {
-                "inst_id": request.inst_id,
-                "inst_type": _normalize_inst_type(request.inst_id, request.inst_type.value),
+                "inst_id": resolved_inst_id,
+                "inst_type": inst_type,
                 "available": False,
                 "message": "数据获取器不可用",
                 "bids": [],
@@ -887,11 +904,11 @@ class AgentQueryService:
             }
 
         try:
-            orderbook = fetcher.get_orderbook(request.inst_id, request.depth)
+            orderbook = fetcher.get_orderbook(resolved_inst_id, request.depth)
         except Exception as exc:
             return {
-                "inst_id": request.inst_id,
-                "inst_type": _normalize_inst_type(request.inst_id, request.inst_type.value),
+                "inst_id": resolved_inst_id,
+                "inst_type": inst_type,
                 "available": False,
                 "message": f"获取盘口深度失败: {exc}",
                 "bids": [],
@@ -900,8 +917,8 @@ class AgentQueryService:
 
         if not orderbook:
             return {
-                "inst_id": request.inst_id,
-                "inst_type": _normalize_inst_type(request.inst_id, request.inst_type.value),
+                "inst_id": resolved_inst_id,
+                "inst_type": inst_type,
                 "available": False,
                 "message": "未获取到盘口深度",
                 "bids": [],
@@ -913,21 +930,21 @@ class AgentQueryService:
         return payload
 
     def get_recent_trades_snapshot(self, request: AgentRecentTradesQueryRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         fetcher = self.ctx.fetcher()
         storage = self.ctx.storage()
 
         trades = []
         if fetcher:
-            trades = fetcher.get_recent_trades_local_first(request.inst_id, request.limit, inst_type=inst_type)
+            trades = fetcher.get_recent_trades_local_first(resolved_inst_id, request.limit, inst_type=inst_type)
         if not trades:
-            trades = storage.get_recent_trades(request.inst_id, limit=request.limit, inst_type=inst_type)
+            trades = storage.get_recent_trades(resolved_inst_id, limit=request.limit, inst_type=inst_type)
 
         serialized = [_safe_json_value(item.to_dict() if hasattr(item, "to_dict") else item) for item in trades]
         buy_volume = sum(float(item.get("size", 0) or 0) for item in serialized if item.get("side") == "buy")
         sell_volume = sum(float(item.get("size", 0) or 0) for item in serialized if item.get("side") == "sell")
         return {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "limit": request.limit,
             "trades": serialized,
@@ -986,11 +1003,11 @@ class AgentQueryService:
         }
 
     def build_analysis_dataset(self, request: AgentPythonAnalysisRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         timeframes = [_normalize_timeframe(item) for item in request.timeframes]
         candles_payload = self.get_multi_timeframe_candles(
             AgentCandleQueryRequest(
-                inst_id=request.inst_id,
+                inst_id=resolved_inst_id,
                 inst_type=inst_type,
                 timeframes=timeframes,
                 limit=request.candles_limit,
@@ -1001,7 +1018,7 @@ class AgentQueryService:
         dataset: Dict[str, Any] = {
             "context": {
                 "goal": request.goal,
-                "inst_id": request.inst_id,
+                "inst_id": resolved_inst_id,
                 "inst_type": inst_type,
                 "timeframes": timeframes,
                 "generated_at": datetime.utcnow().isoformat(),
@@ -1014,7 +1031,7 @@ class AgentQueryService:
             for timeframe in timeframes:
                 indicator_payload = self.get_indicator_snapshot(
                     AgentIndicatorQueryRequest(
-                        inst_id=request.inst_id,
+                        inst_id=resolved_inst_id,
                         inst_type=inst_type,
                         timeframe=timeframe,
                         indicators=request.indicators,
@@ -1029,15 +1046,15 @@ class AgentQueryService:
 
         if request.include_market_snapshot:
             dataset["market_snapshot"] = self.get_market_snapshot(
-                AgentMarketQueryRequest(inst_id=request.inst_id, inst_type=inst_type)
+                AgentMarketQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type)
             )
         if request.include_orderbook:
             dataset["orderbook"] = self.get_orderbook_snapshot(
-                AgentOrderBookQueryRequest(inst_id=request.inst_id, inst_type=inst_type, depth=request.orderbook_depth)
+                AgentOrderBookQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type, depth=request.orderbook_depth)
             )
         if request.include_recent_trades:
             dataset["recent_trades"] = self.get_recent_trades_snapshot(
-                AgentRecentTradesQueryRequest(inst_id=request.inst_id, inst_type=inst_type, limit=request.recent_trade_limit)
+                AgentRecentTradesQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type, limit=request.recent_trade_limit)
             )
         if request.include_position:
             dataset["position"] = self.get_position_snapshot(AgentPositionQueryRequest(mode=request.mode))
@@ -1045,16 +1062,16 @@ class AgentQueryService:
         return dataset
 
     def get_trading_context(self, request: AgentTradingContextRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         timeframes = _dedupe_timeframes(request.timeframes)
         market_snapshot = self.get_market_snapshot(
-            AgentMarketQueryRequest(inst_id=request.inst_id, inst_type=inst_type)
+            AgentMarketQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type)
         )
 
         timeframe_payload: Dict[str, Any] = {}
         for timeframe in timeframes:
             candles = self._load_candles(
-                inst_id=request.inst_id,
+                inst_id=resolved_inst_id,
                 inst_type=inst_type,
                 timeframe=timeframe,
                 limit=request.candles_limit,
@@ -1063,7 +1080,7 @@ class AgentQueryService:
             serialized_candles = [_serialize_candle(item) for item in candles]
             indicator_snapshot = self.get_indicator_snapshot(
                 AgentIndicatorQueryRequest(
-                    inst_id=request.inst_id,
+                    inst_id=resolved_inst_id,
                     inst_type=inst_type,
                     timeframe=timeframe,
                     indicators=request.indicators,
@@ -1084,19 +1101,19 @@ class AgentQueryService:
                 "signal": signal,
             }
 
-        data_health_payload = self._build_data_health_payload(symbol=request.inst_id, include_orphans=True)
+        data_health_payload = self._build_data_health_payload(symbol=resolved_inst_id, include_orphans=True)
         orderbook_payload = self.get_orderbook_snapshot(
-            AgentOrderBookQueryRequest(inst_id=request.inst_id, inst_type=inst_type, depth=request.orderbook_depth)
+            AgentOrderBookQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type, depth=request.orderbook_depth)
         ) if request.include_orderbook else None
         trades_payload = self.get_recent_trades_snapshot(
-            AgentRecentTradesQueryRequest(inst_id=request.inst_id, inst_type=inst_type, limit=request.recent_trade_limit)
+            AgentRecentTradesQueryRequest(inst_id=resolved_inst_id, inst_type=inst_type, limit=request.recent_trade_limit)
         ) if request.include_recent_trades else None
         position_payload = self.get_position_snapshot(
             AgentPositionQueryRequest(mode=request.mode)
         ) if request.include_position else None
         alignment = self.analyze_multi_timeframe_alignment(
             AgentAlignmentQueryRequest(
-                inst_id=request.inst_id,
+                inst_id=resolved_inst_id,
                 inst_type=inst_type,
                 timeframes=timeframes,
                 limit=request.candles_limit,
@@ -1105,7 +1122,7 @@ class AgentQueryService:
         )
 
         return {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "mode": normalize_mode(request.mode.value) or self.ctx.default_mode(),
             "market_snapshot": market_snapshot,
@@ -1301,7 +1318,7 @@ class AgentQueryService:
         )
 
     def analyze_multi_timeframe_alignment(self, request: AgentAlignmentQueryRequest) -> Dict[str, Any]:
-        inst_type = _normalize_inst_type(request.inst_id, request.inst_type.value)
+        resolved_inst_id, inst_type = _resolve_query_inst_id(request.inst_id, request.inst_type.value)
         timeframe_signals: Dict[str, Any] = {}
         bullish_count = 0
         bearish_count = 0
@@ -1309,7 +1326,7 @@ class AgentQueryService:
 
         for timeframe in _dedupe_timeframes(request.timeframes):
             candles = self._load_candles(
-                inst_id=request.inst_id,
+                inst_id=resolved_inst_id,
                 inst_type=inst_type,
                 timeframe=timeframe,
                 limit=request.limit,
@@ -1352,7 +1369,7 @@ class AgentQueryService:
         )
 
         return {
-            "inst_id": request.inst_id,
+            "inst_id": resolved_inst_id,
             "inst_type": inst_type,
             "alignment": alignment,
             "confidence": round(confidence, 4),

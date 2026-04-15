@@ -423,3 +423,38 @@ async def test_market_correlation_returns_perfect_positive_matrix():
     assert response.data["symbols"] == ["BTC-USDT", "ETH-USDT"]
     assert response.data["matrix"][0][1] == 1.0
     assert response.data["matrix"][1][0] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_market_correlation_skips_symbols_with_insufficient_candles_when_two_valid_symbols_remain():
+    import app.api.market as market_mod
+
+    class FakeManager:
+        def get_candles_with_sync(self, inst_id, timeframe, count, auto_sync, inst_type="SPOT"):
+            if inst_id == "SOL-USDT":
+                return [SimpleNamespace(timestamp=i, close=300 + i) for i in range(10)]
+            base = 100 if inst_id == "BTC-USDT" else 200
+            return [
+                SimpleNamespace(timestamp=i, close=base + i * (1 if inst_id == "BTC-USDT" else 2))
+                for i in range(30)
+            ]
+
+    response = await market_mod.analyze_market_correlation(
+        market_mod.CorrelationRequest(
+            symbols=["BTC-USDT", "ETH-USDT", "SOL-USDT"],
+            timeframe="1H",
+            days=5,
+            limit=30,
+            inst_type="SPOT",
+        ),
+        manager=FakeManager(),
+    )
+
+    assert response.code == 0
+    assert response.data["symbols"] == ["BTC-USDT", "ETH-USDT"]
+    assert response.data["excluded_symbols"] == [
+        {
+            "symbol": "SOL-USDT",
+            "reason": "可用K线不足，至少需要 20 根",
+        }
+    ]

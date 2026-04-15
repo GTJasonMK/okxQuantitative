@@ -1,0 +1,1608 @@
+模型训练构思（统计规范增强版）
+
+一、任务的正式定义
+不要把任务理解成“猜下一秒价格”或“拟合某个因子”，而要把它定义成一个条件分布学习问题：
+
+- 在每个交易所固定 15m 边界时刻 t，估计
+  P(Z_t | X_t, M_t, V_t = 1)
+
+其中：
+
+- t：交易所固定 15m 边界时刻
+- X_t：边界 t 之前连续 7200 秒的秒级状态张量，形状为 7200 x F
+- Z_t：边界 t 之后下一整根 15m K 线的重参数化目标
+- M_t：元数据，包含合约、会话、时间、质量、采样、切分等信息
+- V_t = 1：该样本满足完整性与质量约束
+
+把问题这样定义有三个直接收益：
+
+- 它把“样本”定义成条件分布样本，而不是零散特征和标签
+- 它允许我们显式讨论时间泄漏、选择偏差、样本依赖和评估显著性
+- 它天然兼容“点预测、区间预测、分位数预测、联合分布预测”四类模型
+
+线上真正要最小化的不是训练 loss 本身，而是部署总体 P_* 下的期望风险：
+
+- R_*(f) = E_(X,Z,M)~P_* [ S(f(X, M), Z) ]
+
+其中：
+
+- P_*：部署时真正会遇到的样本分布
+- S：proper scoring rule，必须是与预测对象一致的严格或至少 proper 的评分规则
+
+因此文档的核心不只是“怎么训练”，而是：
+
+- 正确定义 P_*
+- 正确定义 Z_t
+- 正确定义 S
+- 正确定义训练/验证/测试的构造方式
+
+二、时间索引、因果性与覆盖区间
+1. 决策时刻
+
+- 只在交易所固定 15m 边界时刻 t 产出一次预测
+- 决策时刻集合是：
+  T = { ..., 00:00, 00:15, 00:30, 00:45, ... }
+
+2. 单个监督样本的时间覆盖
+
+- 输入窗口：[t - 7200, t)
+- 标签窗口：[t, t + 900)
+- 样本总覆盖区间：[t - 7200, t + 900)
+
+这件事很重要，因为它直接决定：
+
+- 时间泄漏边界
+- split 规则
+- embargo 大小
+- block bootstrap 的最小块长
+
+3. 因果约束
+
+- X_t 只能使用 t 之前的信息
+- Z_t 只能来自 t 之后的标签窗口
+- 所有 rolling feature 都必须是 causal rolling
+- 禁止 centered window
+- 禁止用未来数据参与标准化、分位数变换、异常值阈值拟合
+
+用过滤信息表示：
+
+- X_t 属于 F_t
+- Z_t 属于 F_(t+900) 且不属于 F_t
+
+4. 标准化也会泄漏
+
+- 任何 scaler、normalizer、winsorizer、quantile map 都只能在训练集拟合
+- 验证集和测试集只能复用训练期拟合出来的参数
+- 不能先全量数据拟合再切分，否则属于统计泄漏
+
+三、预测目标必须先重参数化，再谈建模
+直接预测 OHLC 有两个问题：
+
+- 它们有天然支持集约束：
+  low <= min(open, close) <= max(open, close) <= high
+- 四个量之间存在很强的条件相关结构，不能当成四个独立标签
+
+因此正式目标不定义为 OHLC，而定义为：
+
+- anchor = t - 1 这一秒条的 close_price
+- r_open = log(open / anchor)
+- r_close = log(close / anchor)
+- u = log(high / max(open, close))，要求 u >= 0
+- d = log(min(open, close) / low)，要求 d >= 0
+
+重建规则：
+
+- open = anchor * exp(r_open)
+- close = anchor * exp(r_close)
+- high = max(open, close) * exp(u)
+- low = min(open, close) * exp(-d)
+
+所以正式标签向量是：
+
+- Z_t = (r_open, r_close, u, d)
+
+这个参数化有四个统计收益：
+
+- 自动满足 K 线支持约束
+- 把价格尺度问题转换成相对变化问题，跨时段更稳定
+- 把 high/low 拆成“上冲幅度/下探幅度”，可解释性更强
+- 允许模型在合法支持集上输出联合分布
+
+重要结论：
+
+- 如果一个模型把这四个量当成彼此独立的回归头，它等价于额外假设
+  r_open ⟂ r_close ⟂ u ⟂ d | X_t, M_t
+- 这个条件独立假设在金融时间序列里通常不成立
+- 因此“独立四头回归”最多只能当 baseline，不能当正式主模型
+
+四、标签必须由会话内 1s 秒条自聚合得到
+标签层不能依赖外部 15m K 线源，而必须由同一会话内采到的 1s 秒条自行聚合。
+
+label 构造规则：
+
+- 决策时刻：t
+- 输入窗口：[t - 7200, t)
+- 标签窗口：[t, t + 900)
+- anchor_close = t - 1 这一秒条的 close_price
+- open = 标签窗口第一秒的 open_price
+- high = 标签窗口内 high_price 最大值
+- low = 标签窗口内 low_price 最小值
+- close = 标签窗口最后一秒的 close_price
+
+这样做的原因：
+
+- 训练与线上口径完全一致
+- 不依赖外部 K 线同步质量
+- 避免“训练标签来自别的源、线上特征来自自己的流”这种体系错位
+
+五、合约研究数据集的正确分层
+合约数据集不是一张扁平训练表，而是一组彼此解耦的对象。
+
+1. instrument_profile
+
+作用：
+
+- 保存合约静态或慢变画像
+- 为单合约单模型提供稳定身份
+
+建议字段：
+
+- inst_id, exchange, market_type
+- base_ccy, quote_ccy, settle_ccy
+- tick_size, lot_size, contract_value
+- listing_ts, active_from, active_to
+
+2. collection_session
+
+作用：
+
+- 表示一次明确的数据收集会话
+- 承载采样偏差分析和质量审计所需元数据
+
+建议字段：
+
+- session_id, inst_id, started_at, ended_at, planned_duration_sec
+- status, stop_reason, collector_version, source_config_hash
+- trigger_mode, trigger_note, sampling_policy_id
+- valid_second_count, missing_second_count
+- book_stale_second_count, state_stale_second_count
+- coverage_ratio, quality_score
+
+补充说明：
+
+- trigger_mode 不是 UI 附属字段，而是采样机制的一部分
+- sampling_policy_id 用来追踪该会话究竟是手动采集、定时采集还是研究专项采集
+
+3. second_state
+
+这是规范秒级底座层，也是 canonical source of truth。
+
+建议字段：
+
+标识与时间：
+
+- session_id, inst_id, second_bucket, ts_exchange, ts_local
+
+价格快照：
+
+- bid_price, ask_price, bid_size, ask_size
+- mid_price, microprice
+- open_price, high_price, low_price, close_price
+- mark_price, index_price
+
+成交流：
+
+- trade_count, signed_trade_notional
+- buy_notional, sell_notional
+- buy_count, sell_count, max_trade_notional
+- buy_burst_count, sell_burst_count
+- buy_burst_notional, sell_burst_notional
+
+永续属性：
+
+- open_interest, oi_delta
+- funding_rate, funding_delta
+- premium, basis_bps
+
+盘口结构：
+
+- spread_bps, book_level_count
+- multi_level_book_imbalance, book_slope
+
+质量字段：
+
+- has_trade_input, has_book_input, has_state_input
+- book_age_seconds, state_age_seconds, clock_skew_ms
+- is_valid_second, quality_grade, invalid_reason
+- integrity_policy_version
+
+说明：
+
+- second_state 是研究底座，不是某一版模型的最终特征矩阵
+- second_state 是有损压缩，不是原始事件流的充分统计量
+- 但对“预测下一根 15m K 线”这个一阶段任务，它是合理底座
+
+4. boundary_target_15m
+
+作用：
+
+- 保存每个 15m 决策边界对应的未来标签
+
+建议字段：
+
+- target_id, session_id, inst_id, decision_ts
+- anchor_second_bucket, anchor_close_price
+- label_start_ts, label_end_ts
+- open_price, high_price, low_price, close_price
+- r_open, r_close, u, d
+- label_complete, invalid_reason, label_definition_version
+
+5. sample_index_15m
+
+作用：
+
+- 定义监督样本是否存在、是否合法、何时成熟
+
+建议字段：
+
+- sample_id, session_id, inst_id, decision_ts
+- input_start_ts, input_end_ts, label_start_ts, label_end_ts
+- input_second_count, label_second_count
+- input_complete_7200, label_complete_900
+- sample_valid, ready_for_inference, ready_for_training
+- invalid_reason, prev_sample_overlap_seconds, stride_seconds
+
+注意：
+
+- 同一合约多个会话可以合并训练
+- 但一个样本必须完全来自单个会话
+- 不允许跨会话拼接 7200 秒输入窗口
+
+6. target_census_15m
+
+作用：
+
+- 表示目标总体 P_* 的未标注 15m 边界普查层
+- 它不负责产生训练标签，只负责让 P_* 可以被因果地观测、估计和诊断
+
+设计原则：
+
+- target_census_15m 必须独立于“手动会话式秒级采集”
+- 它可以是低频、低耦合、轻量级后台登记器
+- 它必须覆盖研究时段内所有 deployment-eligible 的 15m 边界，而不是只覆盖有人点击开始采集的时段
+
+建议字段：
+
+- census_id, inst_id, decision_ts
+- deployment_eligible, census_policy_version
+- shift_state_definition_version, shift_state_blob_ref
+- hour_of_day, day_of_week
+- realized_vol_proxy_2h, spread_snapshot_bps, liquidity_snapshot_bin
+- funding_regime, session_active_flag
+- source_health_flag, invalid_reason
+
+严格约束：
+
+- 这里只能保存 F_t 时刻已经可观测到的 X_t、M_t 摘要
+- 绝不能混入 [t, t + 900) 的未来标签信息
+- 若 target_census_15m 不存在，则 P_* 只能停留在概念层，dataset_status 至多是 research_only
+
+关键补充：
+
+- target_census 的“摘要”不能是随意挑几个字段临时拼出来，而必须是正式声明的 shift state
+- 记 S_t = psi_shift(X_t, M_t)
+- psi_shift 只能使用 decision_ts = t 时刻已可观测的信息，并且必须写入 shift_state_definition_version
+- target_census_15m 与 labeled sample layer 必须在同一 version 下生成同构的 S_t
+- 后续的 strata、MMD、来源分类器、weighting_version_v1/v2 全都定义在 S_t 上
+- 如果未来想在更丰富空间上做 weighting，就必须先升级 psi_shift 并持久化新的 S_t；不能把当前未记录的 full X_t 空间权重当作“已经可识别”
+
+建议把第一版直接收敛成一个小而稳定的显式 schema：
+
+- shift_state_definition_version_v1 = compact_boundary_state_v1
+
+其中定义：
+
+- 记一秒 log-return 为
+  r_s^(1s) = log(close_s / close_(s-1))
+- 所有 bps 指标统一写成 1e4 倍 log 量
+- 所有 rolling 统计都只使用 [t - 7200, t) 内已经可观测到的秒条
+
+S_t 的字段建议直接写死为：
+
+1. 日历与边界位置
+
+- slot_15m = floor(minute_of_day / 15)，取值 {0, ..., 95}
+- weekend_flag = 1{ISO weekday in {6, 7}}
+
+2. 最近价格状态
+
+- ret_15m_bps = 1e4 * log(close_(t-1) / close_(t-900))
+- ret_2h_bps = 1e4 * log(close_(t-1) / close_(t-7200))
+- rv_15m_bps = 1e4 * sqrt(sum_(s=t-899)^(t-1) (r_s^(1s))^2)
+- rv_2h_bps = 1e4 * sqrt(sum_(s=t-7199)^(t-1) (r_s^(1s))^2)
+- range_15m_bps = 1e4 * log(max_high_[t-900,t) / min_low_[t-900,t))
+- range_2h_bps = 1e4 * log(max_high_[t-7200,t) / min_low_[t-7200,t))
+
+3. 边界流动性与盘口状态
+
+- spread_last_bps = 1e4 * (ask1_(t-1) - bid1_(t-1)) / mid_(t-1)
+- spread_median_60s_bps = median(spread_last_bps over [t-60, t))
+- depth_10bps_log = log(1 + bid_depth_10bps_(t-1) + ask_depth_10bps_(t-1))
+- imbalance_10bps = (bid_depth_10bps_(t-1) - ask_depth_10bps_(t-1)) / (bid_depth_10bps_(t-1) + ask_depth_10bps_(t-1))
+- trade_count_60s = sum_(s=t-60)^(t-1) trade_count_s
+- trade_notional_60s_log = log(1 + sum_(s=t-60)^(t-1) trade_notional_s)
+
+4. 事件与质量状态
+
+- funding_countdown_min = 距离下一次 funding settlement 的分钟数
+- near_funding_flag = 1{funding_countdown_min <= 60}
+- book_stale_ratio_60s = mean_(s=t-60)^(t-1) 1{book_age_seconds_s > book_stale_threshold_sec}
+- state_stale_ratio_60s = mean_(s=t-60)^(t-1) 1{state_age_seconds_s > state_stale_threshold_sec}
+- source_health_flag = 1{book_stale_ratio_60s = 0 and state_stale_ratio_60s = 0}
+- session_active_flag = 1{该 15m 边界时刻存在手动采集会话覆盖}
+
+v1 的强约束：
+
+- S_t 存储 raw causal state，不在存储层做标准化、z-score 或 rank transform
+- 若某个字段因源数据无效而无法构造，则不得插值补齐；应显式把 deployment_eligible 置 0 或记录 invalid_reason
+- shift_state_blob_ref 若采用 blob/JSON 存储，其 schema 必须与上述字段名逐一对应，不允许“自由扩展字段但不升版本”
+
+为了让 v1 的 weighting 不至于一开始就落入高维稀疏，建议同时写死一个低基数分层协议：
+
+- strata_definition_version_v1 = coarse_shift_strata_v1
+
+具体定义：
+
+- tod_bucket_6h = floor(slot_15m / 24)，取值 {0, 1, 2, 3}
+- rv_2h_bin_3 = 按 outer origin 对应的 pre-origin census window 中 rv_2h_bps 的 tercile 切分
+- liquidity_score = depth_10bps_log - log(1 + spread_median_60s_bps)
+- liquidity_bin_3 = 按同一 pre-origin census window 中 liquidity_score 的 tercile 切分
+- 第一版主 strata：
+  s_v1 = (tod_bucket_6h, weekend_flag, rv_2h_bin_3, liquidity_bin_3)
+
+这样第一版共有：
+
+- 4 * 2 * 3 * 3 = 72 个主 strata
+
+这 72 个 strata 的目的不是追求完美刻画分布，而是：
+
+- 让 v1 weighting 可审计、低维、可覆盖检查
+- 把更细的连续 shift 交给 v2 的 domain classifier 去吸收
+
+必须额外记录：
+
+- strata_definition_version 只定义“如何切”，不定义“切点取值”
+- 每个 outer origin 下 rv_2h_bin_3 与 liquidity_bin_3 的真实 cutpoints 都必须持久化到 strata_fit_ref
+- 若同一 dataset_manifest 汇总多个 outer origin，则 strata_fit_ref 必须按 origin 分别保存
+
+7. dataset_manifest
+
+作用：
+
+- 表示一次明确、可复现、可审计的数据集构造结果
+
+建议字段：
+
+- dataset_id, inst_id, included_session_ids
+- sample_filter_rule, feature_recipe_version, label_definition_version
+- integrity_policy_version, deployment_target_version
+- target_census_policy_version, target_window_policy_version
+- strata_definition_version, strata_fit_ref
+- sampling_stride_sec, split_definition_version, embargo_sec
+- weighting_version, weight_definition, weight_estimator_version, weight_fit_ref
+- shift_state_definition_version, shift_assumption_version, shift_diagnostic_version
+- refit_policy_version, domain_classifier_version, domain_classifier_fit_ref
+- regime_definition_version, bootstrap_definition_version
+- evaluation_protocol_version, score_definition_version, prerank_definition_version
+- policy_definition_version, policy_parameter_ref
+- decision_utility_version, utility_parameter_ref, execution_assumption_version
+- multiple_comparison_version
+- dataset_status, shift_diagnostic_result
+- target_census_count, support_overlap_result
+- train_sample_count, val_sample_count, test_sample_count
+- train_effective_sample_size, val_effective_sample_size, test_effective_sample_size
+- created_at
+
+六、完整性不是口头概念，必须参数化
+“严格完整”必须被写成显式规则，而不是依赖开发者理解。
+
+建议把完整性策略写成一个独立对象 integrity_policy：
+
+- integrity_policy_version
+- book_stale_threshold_sec
+- state_stale_threshold_sec
+- clock_skew_threshold_ms
+- required_book_fields
+- required_state_fields
+- trade_missing_policy
+- strict_input_complete
+- strict_label_complete
+
+正式定义单秒有效性：
+
+- I_valid(s) =
+  1{second_state 存在}
+  * 1{book_age_seconds <= book_stale_threshold_sec}
+  * 1{state_age_seconds <= state_stale_threshold_sec}
+  * 1{clock_skew_ms <= clock_skew_threshold_ms}
+  * 1{required fields 全部存在}
+
+并明确：
+
+- trade_count = 0 不是坏秒点
+- “无成交但有快照”是正常市场状态
+- 真正无效的是秒条缺失或关键输入 stale 超阈值
+
+正式定义样本有效性：
+
+- input_valid(t) = 1{ sum_(s=t-7200)^(t-1) I_valid(s) = 7200 }
+- label_valid(t) = 1{ sum_(s=t)^(t+899) I_label(s) = 900 }
+- sample_valid(t) = input_valid(t) * label_valid(t)
+
+其中：
+
+- I_label(s) 至少要求标签构造所需 OHLC 来源存在
+- 第一版采用最严格版本：输入和标签都不允许缺秒
+
+重要约束：
+
+- 任何完整性阈值一旦变化，都必须升级 integrity_policy_version
+- 不能在不改版本号的情况下偷偷改阈值
+
+七、数据层和模型层必须解耦
+数据定义与模型结构是两个问题，不能绑死。
+
+数据层定义：
+
+- 一个监督样本必须是单会话内连续 7200 x F 的因果输入
+- 这一定义稳定存在于 dataset_manifest 中
+
+模型层自由度：
+
+- 模型不必直接生吃 7200 个原子 token
+- 可以用 patching、CNN front-end、多分辨率编码、state-space、transformer encoder 等方式压缩
+
+因此：
+
+- 7200 x F 是数据集定义，不是模型接口强制形式
+- 数据底座服务于多种模型研究，而不是某一版模型
+
+八、部署总体 P_* 必须先定义，否则“好模型”无意义
+如果不定义部署总体，训练和评估都是漂浮的。
+
+对单合约单模型，建议把目标总体 P_* 定义为：
+
+- 该合约在研究时段内所有可交易 15m 边界样本的分布
+- 若线上只在特定时段启用，则 P_* 进一步限制到该时段子总体
+
+这意味着：
+
+- 训练数据不是目标本身
+- 训练数据只是对目标总体的抽样
+
+而当前系统采用“按钮触发手动采集会话”，训练数据实际来自另一个分布 Q：
+
+- Q != P_* 的风险很高
+- 典型原因是人工更可能在高波动、主观有机会、有人值守时开启会话
+
+P_* 不能只写成一句定义，还必须可被因果地观测。
+
+因此正式设计要求：
+
+- 用 target_census_15m 作为目标总体的未标注边界普查层
+- 对任一外层 origin = o_k，只能使用 decision_ts < o_k 的 census 记录来估计该 origin 下的 P_*
+- 禁止用整个研究期的全量 census 回头估计更早 origin 的 p_s，否则属于分布层面的前视偏差
+
+如果记：
+
+- C^(k) = { c_t : decision_ts < o_k, deployment_eligible = 1 }
+
+则第 k 个 outer origin 下的目标总体估计只能由 C^(k) 给出。
+
+target_window_policy_version 必须明确写死：
+
+- expanding census window 还是 rolling census window
+- 若 rolling，窗口长度是多少
+- strata 的切分边界如何拟合、何时冻结
+
+这条规则的意义是：
+
+- 让 P_* 的估计和训练/验证/测试一样服从严格因果约束
+- 避免“测试期未来分布已经被拿去修正训练期权重”的隐性泄漏
+
+九、手动会话的选择偏差必须被显式修正
+这是当前文档里必须补全的第一大统计缺口。
+
+1. 风险的正式写法
+
+我们真正关心的是：
+
+- R_*(f) = E_(X,Z,M)~P_* [ S(f(X, M), Z) ]
+
+但手动采集得到的是：
+
+- R_Q(f) = E_(X,Z,M)~Q [ S(f(X, M), Z) ]
+
+如果 P_* != Q，则直接最小化 R_Q 不代表最小化 R_*。
+
+2. 先定义当前系统真正可识别的 shift state
+
+当前架构下，target_census_15m 不保存完整的 7200 x F 输入轨迹，因此 weighting 不能先抽象写成 w(X_t, M_t)，再默认它已经可被当前系统估计。
+
+正式上必须先声明：
+
+- S_t = psi_shift(X_t, M_t)
+- psi_shift 是一个因果、版本化、可审计的映射
+- target_census_15m 与 labeled sample layer 必须共享同一个 shift_state_definition_version
+
+如果记逐样本 loss 为：
+
+- L_f(t) = S(f(X_t, M_t), Z_t)
+
+则当前系统直接可估计的量是：
+
+- R_*^S(f) = E_Q [ w(S_t) * L_f(t) ]
+- w(S_t) = p_*(S_t) / q(S_t)
+
+这不是文字游戏，而是识别边界：
+
+- R_*^S(f) 是当前架构下可观测、可审计、可复现的部署风险 proxy
+- 它只能在声明好的 shift state 空间上成立
+- 若未来想把 weighting 提升到更丰富空间，就必须同步提升 target_census 的 S_t 记录能力
+
+3. 理想的 full-space covariate shift 与当前可操作版本
+
+理想化地，如果接受下面这个工作假设：
+
+- P_*(Z | X, M) = Q(Z | X, M)
+- 但 P_*(X, M) != Q(X, M)
+
+那么有：
+
+- R_*(f) = E_Q [ w(X, M) * S(f(X, M), Z) ]
+
+其中：
+
+- w(X, M) = p_*(X, M) / q(X, M)
+
+这就是 importance weighting 的基本原理。
+
+但在当前系统里，真正可以落地的是 S_t 空间上的 weighting，而不是未被 target_census 持久化的 full-space weighting。
+
+因此还必须额外显式写出一个更强、且无法被当前数据完全验证的工作假设：
+
+- A_shift_suff：对所有候选模型 f，有
+  E_(X,Z,M)~P_* [ L_f(t) | S_t ] = E_(X,Z,M)~Q [ L_f(t) | S_t ]
+
+这个假设的含义是：
+
+- 影响候选模型风险排序的 domain shift 已被 S_t 捕获
+- 在给定 S_t 后，手动会话分布与部署总体的剩余差异不会再改变条件平均损失
+
+必须明确：
+
+- support overlap、两样本检验、来源可判别性检查，只能发现 A_shift_suff 明显失败的证据
+- 这些诊断不能证明 A_shift_suff 为真
+- 因此任何“weighted validation 近似部署风险”的说法都必须标记为 assumption-conditional
+
+4. 第一阶段不做黑盒密度比估计，先做显式分层加权
+
+第一版推荐采用可审计的离散分层权重，而不是上来就做黑盒 density ratio estimation。
+
+第一版建议直接把 strata_definition_version_v1 写死为：
+
+- strata_definition_version_v1 = coarse_shift_strata_v1
+- s_v1 = (tod_bucket_6h, weekend_flag, rv_2h_bin_3, liquidity_bin_3)
+
+这些 strata 必须满足一个约束：
+
+- 只能由 decision_ts 时刻已经可观测到的 S_t 及其显式分桶规则派生
+- 不能使用任何来自标签窗口 [t, t + 900) 的未来信息
+
+记：
+
+- s = 某个 stratum
+- p_s = 目标总体 P_* 下该 stratum 的占比
+- q_s = 当前 dataset 下该 stratum 的占比
+
+则样本权重定义为：
+
+- w_s = p_s / q_s
+
+并要求：
+
+- 若 q_s = 0 且 p_s > 0，则该 dataset 不能宣称“覆盖了目标总体”
+- 若使用任何 weight clipping 或 truncation，必须显式写入 dataset_manifest，不能静默处理
+
+第一版建议同时把权重对象本身也写死：
+
+- weight_estimator_version_v1 = exact_strata_ratio_v1
+- weight_definition_v1 = raw_ratio_no_clip_no_self_normalization
+
+含义是：
+
+- 直接用 pre-origin census window 与当前 dataset 上的经验频率比 p_s / q_s 作为权重
+- v1 不做 clipping，也不做自归一化
+- 如果权重过于极端导致有效样本量崩塌，结论应降级为 research_only，而不是静默修补
+- 每个 outer origin 的经验频率表、有效样本量与最终权重向量摘要都必须写入 weight_fit_ref
+
+5. 这套权重怎么用
+
+- 训练时可用于加权经验风险
+- 验证时必须同步用于加权验证分数
+- 超参数选择必须基于加权验证分数，而不是未加权分数
+- deployment_target_version 必须在查看测试集结果之前冻结，不能看完测试结果再改目标总体定义
+
+6. 会话级元数据为什么必须保留
+
+因为如果没有：
+
+- trigger_mode
+- sampling_policy_id
+- started_at / ended_at
+- stop_reason
+
+那就无法重建 Q，也无法分析选择偏差。
+
+7. 加权不是护身符，必须先做 shift 诊断
+
+importance weighting 只有在两个前提下才有意义：
+
+- covariate shift 假设没有被明显破坏
+- P_* 与 Q 至少存在足够的 support overlap
+
+因此在真正使用权重前，必须先做 shift diagnostics。
+
+第一版建议至少做三类检查：
+
+- 分层覆盖检查：
+  对所有预定义 strata 检查 q_s > 0 是否覆盖所有 p_s > 0 的层
+
+- 两样本分布检查：
+  在 shift state S_t 空间上，对 P_* 与 Q 做两样本检验
+  可用 MMD 或等价的非参数两样本检测方法
+
+- 来源可判别性检查：
+  训练一个 blocked session-propensity classifier，用 S_t 预测“该样本来自目标总体抽样还是手动会话抽样”
+  如果这个分类任务稳定地明显优于随机，则说明残余 shift 很强，简单分层加权未必足够
+
+诊断后的规则必须写死：
+
+- 若存在 p_s > 0 但 q_s = 0 的 strata，则 dataset_status = research_only
+- 若两样本差异显著且来源分类器可强判别，则必须把“可部署一致性”降级成“仅研究有效”
+- 只有当 support overlap 成立、shift diagnostics 可接受时，才能把 weighted validation 解释成“声明好的 shift state 空间上的部署风险 proxy”
+- 若 shift_state_definition_version 明显过粗，则外部结论最多写成 deployment-proxy evidence，不能直接写成 deployment-equivalent evidence
+
+8. weighting_version_v2 可以升级为分类式 Density Ratio Estimation
+
+在 target_census_15m 已落地、support overlap 可接受的前提下，第二阶段可把离散分层加权升级成更平滑的密度比估计。
+
+推荐形式：
+
+- 用 target_census_15m 中 deployment-eligible 的未标注 S_t 样本作为目标域
+- 用当前训练样本集对应的 S_t 作为源域
+- 训练二分类器估计：
+  eta(s) = P(domain = target | S_t = s)
+
+再把权重写成：
+
+- w(s) = p_*(s) / q(s)
+- 若分类器训练混合样本中 target 类先验为 pi = P(domain = target)，则
+  w(s) = ((1 - pi) / pi) * eta(s) / (1 - eta(s))
+- 若训练时对 source / target 采用 1:1 balanced sampling，则 pi = 1 / 2，此时 w(s) 退化成 odds ratio
+
+这个版本必须满足六个约束：
+
+- 只能使用 F_t 时刻可观测的 S_t，不得混入未来标签
+- DRE 分类器本身也必须遵守 blocked-by-time / blocked-by-session 拟合，优先使用 out-of-fold 概率避免过拟合权重
+- 若对 eta(s) 做概率校准，校准方法必须显式记录到 domain_classifier_version 或 weight_definition
+- 必须延续 support overlap 和 research_only 的降级规则
+- 若做 weight clipping 或 truncation，范围必须写入 weight_definition
+- 批次内若做自归一化，只能作为数值稳定手段，不能改变最终对外汇报的权重口径
+
+因此建议把它明确写成：
+
+- weighting_version_v1 = strata_ratio_weighting
+- weighting_version_v2 = classifier_density_ratio_weighting
+
+并把 v2 的第一版实现也明确写死：
+
+- domain_classifier_version_v1 = l2_logistic_shift_state_v1
+- weight_estimator_version_v2 = oof_logistic_odds_ratio_v1
+- weight_definition_v2 = raw_odds_ratio_no_clip_no_self_normalization
+
+其中：
+
+- 输入就是 shift_state_definition_version_v1 中的 S_t
+- 类别特征只包括 tod_bucket_6h、weekend_flag、near_funding_flag
+- 连续特征包括其余所有连续状态量，并在每个 outer origin 内用 pre-origin source + target 联合集拟合 robust scaler
+- 训练时必须 blocked-by-time / blocked-by-session，并输出 out-of-fold eta(s)
+- 第一版默认使用 L2 logistic regression，而不是树模型；原因不是它一定最好，而是它最容易审计、最不容易把权重学成黑箱
+- scaler 参数、logistic 系数、intercept、OOF 概率摘要都必须写入 domain_classifier_fit_ref
+
+因此：
+
+- v1 的职责是给出最可审计的低维分层修正
+- v2 的职责是在同一 S_t 空间上给出更平滑的 odds-ratio 估计
+- 两者都失败时，应该承认“当前数据还不支持部署口径推断”，而不是继续堆模型
+
+第一阶段默认仍使用 v1，因为它更可审计；v2 只在 target census 稳定后再启用。
+
+9. weighting 结果能说什么、不能说什么
+
+可以说的：
+
+- 它可以在声明好的 shift state S_t 空间上近似比较候选模型的部署相关风险
+- 它可以暴露“模型是否只是在手动采集偏好的 regime 上看起来更强”
+- 它可以作为研究阶段最有价值的 deployment-proxy 证据
+
+不能说的：
+
+- 它不能在没有 overlap 的地方凭空创造信息
+- 它不能修复真正的 concept drift 或 label shift
+- 它不能证明 P_*(Z | X, M) = Q(Z | X, M)
+- 它也不能证明当前的 S_t 已经充分捕获所有与损失排序有关的 domain shift
+
+十、样本重叠不可避免，但不能拿表面样本数自欺
+如果每 15 分钟构造一个样本，而每个样本回看 7200 秒，则相邻样本输入重叠比例为：
+
+- overlap_ratio = (7200 - 900) / 7200 = 87.5%
+
+这说明：
+
+- 名义样本数 n 会远大于真正的信息量
+- 相邻样本的损失、梯度、预测误差都会强相关
+
+因此：
+
+- 不能 random split
+- 不能普通 K-fold
+- 不能只用表面样本数决定模型复杂度
+
+十一、有效样本数必须估计，不然显著性判断不可信
+这是当前文档里必须补全的第二大统计缺口。
+
+1. 定义
+
+对任意按 decision_ts 排序的标量序列 a_t，可以定义其积分自相关时间：
+
+- tau_int = 1 + 2 * sum_(k=1)^K rho_k
+
+对应有效样本数：
+
+- n_eff = n / tau_int
+
+其中：
+
+- rho_k：序列在 lag k 的自相关
+- n：名义样本数
+
+2. 用什么序列估计 n_eff
+
+第一版建议至少对下面三类序列估计：
+
+- 验证集逐样本主评分序列，例如逐样本 NLL 或 energy score
+- 关键标签分量序列，例如 r_close
+- 模型比较差分序列，例如 delta_t = score_A_t - score_B_t
+
+3. 如何截断自相关和
+
+第一版建议采用保守规则：
+
+- 初始正序列法，或
+- 在成对自相关和第一次非正后截断
+
+目标不是得到“最漂亮”的 n_eff，而是避免把强相关样本误当独立样本。
+
+4. n_eff 的用途
+
+- 解释验证分数的不确定性
+- 解释模型之间差异是否显著
+- 约束对“样本很多”的错觉
+
+但不应该把 n_eff 机械地硬编码成某个参数上限。
+
+更合理的做法是：
+
+- 所有候选模型都报告 parameter_count
+- 同时报告 train_n, val_n, test_n 和对应 n_eff
+- 通过 blocked validation 与 learning curve 共同决定复杂度
+
+5. sampling_stride_sec 的正确角色
+
+- 样本始终按 15m 边界定义
+- 训练集可以选择 sampling_stride_sec = 900, 1800, 3600 等做子采样研究
+- 但验证和测试必须尽量回到全部 15m 边界评估，才能对应线上真实触发频率
+
+十二、训练/验证/测试切分必须针对依赖数据设计
+这是当前文档里必须补全的第三大统计缺口。
+
+1. 基础规则
+
+- 必须按时间顺序切分
+- 禁止 random split
+- 禁止普通 K-fold
+
+2. 最小 embargo
+
+因为单个样本覆盖区间是 [t - 7200, t + 900)，所以：
+
+- embargo_sec >= 7200 + 900 = 8100
+
+这是最小值，不是推荐上限。
+
+3. 推荐 split 规则
+
+- 先按 decision_ts 排序
+- 再按连续时间块或连续会话块划分 train / val / test
+- 任意相邻数据块之间插入 embargo_sec >= 8100 的空白区
+
+4. 超参数搜索应该怎么做
+
+第一版推荐：
+
+- split_definition_version = blocked_temporal_hv_v1
+
+含义是：
+
+- 外层测试集保留为未来时间块
+- 内层超参数选择使用 blocked temporal validation
+- fold 之间始终带 embargo
+- 外层测试集只用于最终一次性报告，不参与反复调参
+
+这里的思想与 dependent data 的 hv-block cross-validation 一致：
+
+- 不是靠随机化打散依赖
+- 而是通过 block 与 gap 明确隔离依赖
+
+5. 单次 outer holdout 还不够，正式报告应采用 rolling-origin
+
+如果只保留一个未来测试块，结果很容易被单一 regime 偶然主导。
+
+因此正式评估协议应当写成：
+
+- evaluation_protocol_version = rolling_origin_v1
+
+推荐定义：
+
+- 选择多个外层 origin：o_1 < o_2 < ... < o_K
+- 对每个 origin，只使用它之前的历史数据训练与调参
+- 每个 origin 的内层调参仍使用 blocked temporal validation + embargo
+- 每个 origin 的外层测试块都是该 origin 之后的一段未来区间
+
+最终报告不能只给一个数字，而至少要给：
+
+- 外层各 origin 的主评分序列
+- across-origin 的均值、中位数、离散度
+- 最差 origin 的表现
+
+这样做的原因是：
+
+- 它更接近真实部署中的 repeated retraining / repeated evaluation 过程
+- 它能区分“某个未来窗口偶然有效”和“跨多个未来窗口都稳健”
+
+6. refit policy 必须版本化
+
+rolling-origin 不只是“多切几刀”，还必须写清楚每次怎么重训。
+
+至少要在 refit_policy_version 中写死：
+
+- expanding window 还是 rolling window
+- 若 rolling，训练历史长度是多少
+- 每个 outer origin 是否允许重新拟合 scaler、weighting、feature recipe 内的统计量
+- 训练后模型在外层测试块内是否固定不变
+
+禁止两种含混做法：
+
+- 看完某个 origin 测试结果后再回改训练窗口长度
+- 在不同 origin 上随意切换 refit 规则
+
+十三、正式预测对象是联合分布，不是四个独立点值
+这是当前文档里必须补全的第四大统计缺口。
+
+1. 正式输出对象
+
+正式模型的输出应该是：
+
+- F_theta(z | X_t, M_t)
+
+也就是 Z_t = (r_open, r_close, u, d) 的联合条件分布，或者其等价采样器。
+
+2. 为什么必须是联合分布
+
+因为我们真正关心的不只是：
+
+- 每个边际是否准
+
+还关心：
+
+- open/close 与高低影线之间的联动
+- 模型对波动范围和实体方向的联合判断
+- 不确定性是否校准
+
+3. 哪些输出形式是合格的
+
+合格：
+
+- 可计算 joint density 的模型
+- 可生成 joint samples 的模型
+- 可输出多个联合分位数场景并保持依赖结构的模型
+
+不合格或只能算 baseline：
+
+- 四个互不相关的独立回归头
+- 只输出一个点值且没有不确定性表示的模型
+
+十四、训练目标和评分规则必须与联合分布一致
+这是当前文档里必须补全的第五大统计缺口。
+
+1. 如果模型能给出 tractable joint density
+
+则主训练目标和主模型选择指标应当是加权平均负对数似然：
+
+- L_NLL(theta) =
+  sum_i w_i * [ -log f_theta(z_i | x_i, m_i) ] / sum_i w_i
+
+其中：
+
+- w_i：来自 deployment weighting 或者默认等权
+- f_theta：联合密度
+
+理由：
+
+- 对联合分布而言，log score 是严格 proper scoring rule
+- 如果模型真在学联合分布，NLL 是最直接的一致性目标
+
+2. 如果模型不能给出 tractable density，但能给出 joint samples
+
+则验证与测试阶段至少应报告：
+
+- energy score
+- variogram score
+
+定义如下。
+
+Energy score：
+
+- ES(F, z) = E ||X - z|| - (1/2) E ||X - X'||,
+  其中 X, X' 独立且服从 F
+
+它是多维 CRPS 的推广，适合 sample-based forecast。
+
+Variogram score：
+
+- VS_p(F, z) =
+  sum_(i,j) w_ij * ( |z_i - z_j|^p - E|X_i - X_j|^p )^2
+
+其中：
+
+- 第一版正式固定 p = 0.5
+- 若无特别定义，默认 w_ij = 1
+- 如需自定义 w_ij，必须写入 score_definition_version
+
+它对相关结构失配更敏感。
+
+3. 这几个分数各自的角色
+
+- joint NLL：如果密度可得，作为主指标
+- ES：适合 sample-based 预测，反映整体分布质量
+- VS_p：补足 ES 对相关结构不敏感的问题
+- CRPS / pinball loss：只作为边际诊断，不作为联合主指标
+
+第一版建议把评估协议写死为：
+
+- score_definition_version = joint_scores_v1
+- Energy Score：Euclidean distance
+- Variogram Score：p = 0.5, w_ij = 1
+
+重要结论：
+
+- 不能用“4 个边际 CRPS 都不错”来替代联合分布评估
+- 不能用“4 个点值误差平均很好”来宣称联合建模成功
+
+十五、校准和 sharpness 必须一起看
+概率预测的标准不是“区间越宽越安全”，也不是“区间越窄越自信”，而是：
+
+- 在 calibration 成立的前提下尽量 sharp
+
+第一版至少应检查：
+
+1. 边际校准
+
+- r_open, r_close, u, d 各自的 PIT 或分位数覆盖率
+- 50% / 80% / 95% 区间的经验覆盖率
+
+2. 边际 sharpness
+
+- 各分量预测区间平均宽度
+- 各分量预测标准差或 IQR
+
+3. 联合结构评分
+
+- ES
+- VS_p
+
+4. 联合校准诊断
+
+如果模型能够输出 joint samples，不能只看边际 PIT，还应至少增加一类 multivariate rank diagnostic。
+
+第一版推荐：
+
+- 对每个样本从预测联合分布中抽取固定数量的 joint samples
+- 对观测 z_t 与这些 samples 计算 multivariate rank histogram
+- 可采用 average-rank 或 band-depth rank 这类对多维预测更稳定的构造
+
+这些图形的主要解释是：
+
+- U 形：预测分布偏窄，under-dispersed
+- 中间鼓包：预测分布偏宽，over-dispersed
+- 左右明显偏斜：存在系统性位置偏差或依赖结构失配
+
+如果模型是 tractable density 而不是 sample-based forecast，也应从该密度采样后做同样的联合校准诊断。
+
+4.1 使用 pre-rank functions 增强联合校准解释性
+
+单一 multivariate rank histogram 往往只能告诉你“联合校准有问题”，但不一定告诉你“问题主要出在位置、散布还是依赖结构”。
+
+因此第一版建议再配一组 pre-rank diagnostics，并写入：
+
+- prerank_definition_version = multicalibration_v1
+
+至少包含三类 pre-rank function：
+
+- level_prerank(z) = |r_open| + |r_close| + u + d
+  作用：检查整体振幅或总体 level 是否系统偏高/偏低
+
+- asymmetry_prerank(z) = (u - d)
+  作用：检查上冲与下探的非对称性是否失衡
+
+- body_shadow_prerank(z) = |r_close - r_open| / (u + d + epsilon)
+  作用：检查实体与影线相对结构是否失真
+
+对每个 pre-rank function：
+
+- 先把 joint samples 与观测映射到一维
+- 再构造对应的 rank histogram 或等价 rank-based 校准图
+- 报告其偏离方向和显著失配模式
+
+这样做的好处是：
+
+- 不改变联合分布主任务定义
+- 但能把“联合校准失败”拆解成更可解释的子结构问题
+
+5. 重建价格空间诊断
+
+- 重建后的 open/high/low/close bps 误差
+- high-low 区间宽度误差
+- 实体方向判断误差
+
+重要说明：
+
+- calibration 是预测分布和观测之间的一致性
+- sharpness 是预测分布本身的集中程度
+- 只追求 sharpness 而不看 calibration，会把模型推向过度自信
+
+6. 如果 P_* != Q，上述所有诊断都必须统一到目标总体口径
+
+这条规则非常重要：
+
+- 不能只把主评分做 weighting，而把 PIT、coverage、rank histogram、regime 汇总仍然留在 Q 口径
+
+正式要求：
+
+- 若存在 target_census_15m 且 shift diagnostics 通过，则所有主协议诊断都应在 P_* 口径下汇报
+- 实现方式可以是：
+  1) 在目标总体未标注边界上构造匹配后的评估集；或
+  2) 在 Q 上对逐样本诊断使用归一化 importance weights
+
+归一化权重可写成：
+
+- w_i^norm = w_i / sum_j w_j
+
+应统一应用于：
+
+- 主评分均值
+- marginal coverage / weighted PIT 汇总
+- multivariate rank histogram 的 bin 计数
+- pre-rank diagnostics 的 rank 统计量
+- regime 分层均值与通过率
+
+允许附带报告 unweighted diagnostics，但必须明确标注：
+
+- weighted = 目标总体口径
+- unweighted = 当前验证集经验分布口径
+
+十六、评估必须分 regime 分层，否则平均分会骗人
+加密合约数据高度非平稳，单一平均分不足以说明模型是否可用。
+
+建议至少按以下维度分层汇报：
+
+- hour_of_day
+- day_of_week
+- realized_vol_bin
+- spread_bin
+- liquidity_bin
+- funding regime
+
+每个层都报告：
+
+- 样本数
+- 主评分均值
+- 校准误差
+- sharpness 指标
+
+这样才能回答真正重要的问题：
+
+- 模型是在所有 regime 都稳定，还是只在某些 regime 有效
+
+如果 P_* != Q，则以上 regime 汇总也必须按前一节的目标总体口径做 weighted 版本。
+
+5. 如果特别关心极端行情，必须 ex ante 定义 ROI
+
+金融任务里很容易自然滑向一种错误做法：
+
+- 先看 realized future move
+- 再把“大行情样本”筛出来比较模型
+
+这会落入 forecaster's dilemma：
+
+- 你以为自己在评估“极端行情预测能力”
+- 实际上你是在按观测结果事后挑样本，破坏了评分规则的解释
+
+因此正式协议要求：
+
+- 禁止仅按 realized |r_close|、realized high-low range、realized u/d 等未来结果事后筛测试子集并据此宣称模型更优
+
+如果确实要强调极端行情，必须采用下面两类合格方法之一：
+
+方法 A：状态先验定义的 ROI
+
+- 只用 F_t 时刻可观测的状态来定义 ROI
+- 例如：当前 realized_vol_proxy_2h 很高、spread 很宽、liquidity 很差、funding regime 极端
+
+方法 B：预先固定的 tail-focused proper scores
+
+- 在 evaluation_protocol_version 中提前冻结 tail ROI 的定义
+- 使用 formally proper 的 weighted scoring rule、censored likelihood 或 threshold-focused score
+- 整个 outer evaluation 期间不得再改阈值或兴趣区域
+
+无论采用哪种方法，都必须同时报告：
+
+- full-population score
+- ROI-specific score
+
+绝不能只汇报“极端样本子集上的赢家”。
+
+十七、显著性和置信区间必须按依赖样本计算
+这是当前文档里必须补全的第六大统计缺口。
+
+由于样本强相关，普通 iid 标准误差是不可信的。
+
+第一版推荐使用 block bootstrap 来给测试分数和模型差异做区间估计。
+
+推荐规则：
+
+- 对按 decision_ts 排序的逐样本 score 序列做重采样
+- 使用 moving block bootstrap 或 stationary bootstrap
+- 平均块长至少覆盖 9 个 15m 边界
+- 具体采用哪一种 bootstrap、平均块长取多少，都必须写入 bootstrap_definition_version
+
+这里的 9 来自：
+
+- 8100 sec / 900 sec = 9
+
+也就是说：
+
+- 单个样本的完整覆盖跨度相当于 9 个边界间隔
+- bootstrap 块长不应小于这个量级
+
+模型比较时建议对逐样本差分序列：
+
+- delta_t = score_A_t - score_B_t
+
+做 paired block bootstrap，并报告：
+
+- mean(delta_t)
+- 95% CI
+
+接受某个新模型的最小标准应当是：
+
+- 它在外层测试集上的主评分优于 baseline
+- 且差分区间不覆盖 0
+- 且没有明显的校准退化
+
+6. 一对一比较之外，还要防止 data snooping
+
+如果你会尝试很多 feature recipe、很多模型族、很多超参数，单个 challenger 对 baseline 的 paired block bootstrap 已经不够。
+
+第一版建议再加一层多模型比较协议：
+
+- multiple_comparison_version = locked_candidate_set_v1
+
+核心规则：
+
+- outer test 开始前先锁定候选模型集合
+- outer test 结果只能用于最终比较，不能据此继续扩充候选集合
+- 若候选模型多于 2 个，最终报告至少给出一组 Model Confidence Set，或等价的多模型保留集合
+
+这样做的原因是：
+
+- 反复试很多模型后再只汇报赢家，会系统性高估“最佳模型”的真实优势
+
+7. 当你关心“在哪些状态下更好”时，用条件预测能力检验
+
+如果问题不是“总体上 A 是否优于 B”，而是：
+
+- 在高波动时是否更好
+- 在低流动性时是否更好
+- 在某些时段是否更好
+
+那么应在逐样本差分序列
+
+- delta_t = score_A_t - score_B_t
+
+上做 conditional predictive ability 检验，并且只能使用 F_t 可观测的状态变量作为 conditioning instruments。
+
+例如：
+
+- tod_bucket_6h
+- weekend_flag
+- rv_2h_bin_3
+- liquidity_bin_3
+- near_funding_flag
+
+这样才能把“总体没差，但特定状态显著更优”与“纯随机波动”区分开。
+
+十八、baseline 必须足够强，才能证明模型真的学到了东西
+如果没有 baseline，再复杂的模型也可能只是在拟合噪声。
+
+第一版至少保留三类 baseline：
+
+1. 无条件分布 baseline
+
+- 直接用训练集或训练期分 strata 的经验标签分布作为预测分布
+
+2. 独立边际 baseline
+
+- 分别预测 r_open, r_close, u, d 的边际分布
+- 但不建模联合相关
+
+3. 简单点值 baseline
+
+- r_open = 0, r_close = 0
+- u, d 用训练集分布中位数或分 strata 中位数
+
+主模型必须在 blocked test 上稳定优于这些 baseline，才有研究价值。
+
+十九、预测最优不等于决策最优
+这份文档的主任务是概率预测设计，但最终系统要进入交易决策，因此必须再补一层 decision protocol。
+
+首先要明确三个对象不同：
+
+- forecast model：输出 Z_t 的条件分布
+- execution / utility protocol：把动作与未来标签映射成可评估的经济结果
+- decision policy：把预测分布、成本、风控约束映射成仓位或交易动作
+
+可以记为：
+
+- F_hat_t = F_theta(. | X_t, M_t)
+- a_t = pi_gamma(F_hat_t, C_t, R_t)
+- U_t = U(a_t, Z_t, C_t, R_t; xi)
+- J_*(pi_gamma; xi) = E_(X,Z,M)~P_* [ U(a_t, Z_t, C_t, R_t; xi) ]
+
+其中：
+
+- a_t：决策动作或目标仓位
+- C_t：成本与滑点模型
+- R_t：风险约束、仓位上限、禁止交易条件
+- gamma：policy 参数
+- xi：执行语义与效用定义，至少包含 execution_assumption_version 与 decision_utility_version
+
+还必须补一条经常被忽略、但在这里非常关键的识别约束：
+
+- 当前监督标签 Z_t 只给出下一根 15m K 线的 OHLC 重参数化结果
+- 若某个 policy 的真实收益依赖 bar 内事件顺序、stop/limit 的先后触发次序、挂单是否先成交后止损，则这些量并不能由 OHLC 唯一识别
+
+因此第一版 decision protocol 只能采用两类合格方案之一：
+
+- A. 只评估可由边界执行规则 + next-bar OHLC 唯一确定的 bar-level utility
+- B. 对无法由 OHLC 唯一识别的 intrabar fill/path，明确写死一个保守执行约定，并把它版本化到 execution_assumption_version
+
+换句话说：
+
+- 不是任何交易策略都能直接接在当前 OHLC 标签上做离线评估
+- 若策略需要更细粒度的成交路径信息，就必须升级标签层，而不是拿不可识别的 PnL 假装可评估
+
+为了让这一层不再停留在抽象层，第一版建议直接固定 3 个版本对象：
+
+1. execution_assumption_version_v1 = boundary_rebalance_hold_to_close_v1
+
+执行语义直接写死为：
+
+- 决策时刻是 15m 边界 t
+- 使用 anchor = t - 1 这一秒条的 close_price 作为边界可交易参考价
+- 在 t 时刻把仓位从 a_(t-1) 调整到 a_t
+- 整个仓位在 [t, t + 900) 内不允许再做 intrabar 加减仓、stop、take-profit、挂单排队、条件单触发
+- 下一次真实调仓只能发生在下一个 15m 边界
+
+这条假设的含义是：
+
+- 第一版 decision layer 只评估“边界调仓 + 持有整根 bar”的策略
+- 它明确放弃对 intrabar 执行路径的幻想，从而保证离线评估是可识别的
+
+2. decision_utility_version_v1 = bar_close_return_with_adverse_excursion_penalty_v1
+
+先定义由 Z_t 可唯一恢复的几个 bar-level 量：
+
+- high_return_t = max(r_open, r_close) + u = log(high / anchor)
+- low_return_t = min(r_open, r_close) - d = log(low / anchor)
+- AE_long_t = max(0, -low_return_t)
+- AE_short_t = max(0, high_return_t)
+
+再定义动作空间：
+
+- A_v1 = {-1, 0, +1}
+
+其中：
+
+- a_t = +1 表示做多 1 单位标准化名义头寸
+- a_t = -1 表示做空 1 单位标准化名义头寸
+- a_t = 0 表示空仓
+- 研究期初始仓位固定为 a_(t0-1) = 0
+
+定义边界调仓量：
+
+- turnover_t = |a_t - a_(t-1)|
+
+定义每单位调仓的执行成本率：
+
+- c_t = (spread_last_bps / 2 + slippage_const_bps) / 1e4
+
+其中：
+
+- spread_last_bps 来自 decision_ts = t 时刻可观测的边界盘口
+- slippage_const_bps 是预先冻结的常数，不允许在 outer test 上回调
+
+则第一版单 bar 效用定义为：
+
+- gross_pnl_t(a_t, Z_t) = a_t * r_close
+- adverse_penalty_t(a_t, Z_t) =
+  1{a_t = +1} * AE_long_t + 1{a_t = -1} * AE_short_t
+- U_t(a_t, Z_t, C_t; xi_v1) =
+  gross_pnl_t(a_t, Z_t)
+  - c_t * turnover_t
+  - lambda_ae * adverse_penalty_t(a_t, Z_t)
+
+其中：
+
+- lambda_ae >= 0 是固定的 adverse excursion 风险厌恶系数
+- xi_v1 = { slippage_const_bps, lambda_ae }
+- utility_parameter_ref 必须保存 xi_v1 的实际取值；若 rolling-origin 下按 origin 重估，则必须按 origin 分别保存
+
+这个效用函数的优点是：
+
+- 完全由当前标签层可识别
+- 同时利用了 close 方向信息与 high/low 风险信息
+- 不依赖任何无法由 OHLC 恢复的路径细节
+
+3. policy_definition_version_v1 = ternary_expected_utility_policy_v1
+
+第一版策略规则直接写成：
+
+- 记 predicted utility 为
+  EU_t(a) = E_(Z ~ F_hat_t) [ U_t(a, Z, C_t; xi_v1) ]
+- 先计算 a in A_v1 上的三个 expected utility
+- 记 a_t^* = argmax_(a in A_v1) EU_t(a)
+
+再引入两个冻结阈值参数：
+
+- tau_entry >= 0：非空仓动作的最小 expected utility 门槛
+- tau_switch >= 0：切换当前方向所需的最小增益门槛
+
+最终动作规则为：
+
+- 若 max(EU_t(+1), EU_t(-1)) <= tau_entry，则 a_t = 0
+- 否则若 a_t^* != a_(t-1) 且 EU_t(a_t^*) - EU_t(a_(t-1)) < tau_switch，则 a_t = a_(t-1)
+- 否则 a_t = a_t^*
+
+因此第一版 policy 参数可以精确写成：
+
+- gamma_v1 = { tau_entry, tau_switch }
+- policy_parameter_ref 必须保存 gamma_v1 的实际取值；若 rolling-origin 下按 origin 重估，则必须按 origin 分别保存
+
+并要求：
+
+- gamma_v1、slippage_const_bps、lambda_ae 全部只能在 inner validation 上拟合
+- outer test 期间完全冻结
+- 若要扩展到连续仓位、多档仓位、波动率目标仓位，必须升级 policy_definition_version
+
+正式协议要求：
+
+- forecast layer 的主选择标准仍然是 proper scoring rule
+- decision layer 必须在冻结的策略规则下单独评估经济价值
+- policy 参数 gamma 的选择必须在 inner validation 上完成，形式上可写成：
+  max_gamma J_val(pi_gamma; xi)
+  s.t. risk / turnover / exposure 约束成立
+- 不能只用 PnL 代替 forecast quality，也不能只用 forecast score 代替最终决策评估
+
+第一版建议至少报告两套结果：
+
+1. 预测层
+
+- joint NLL / ES / VS_p
+- calibration / sharpness / weighted diagnostics
+
+2. 决策层
+
+- 在 rolling-origin 外层测试期上运行冻结的 policy
+- 成本、滑点、资金占用、最大仓位、execution_assumption_version 必须提前写死
+- 报告 mean utility、净收益、回撤、换手、命中率、持仓暴露、下侧尾部风险等策略指标
+
+决策层还必须遵守与预测层同样的因果约束：
+
+- outer test 上不得根据测试结果再改 policy 参数
+- 如果策略阈值依赖训练数据统计量，也必须只在该 origin 的训练期拟合
+- 若 xi 依赖任何经验校准步骤，也必须在该 origin 的训练 / 验证段冻结，不能偷看 outer test
+
+因此最终“可上线”的标准不是单一数字，而是：
+
+- 预测层在 P_* 口径下足够好
+- 决策层在冻结 policy 下有稳定经济价值
+- 两者都通过 rolling-origin 与 block bootstrap 的稳健性检查
+
+二十、第一阶段不追求“大模型”，而追求“稳定、可审计、可复现”
+在当前阶段，更重要的不是模型有多大，而是：
+
+- 数据收集是否稳定
+- 标签口径是否闭合
+- 偏差与泄漏是否可解释
+- 评估是否经得住统计审查
+
+所以第一阶段的核心交付物其实有三个：
+
+- 稳定的 second_state 会话化仓库
+- 可复现的 dataset_manifest
+- 对联合分布有效且对依赖数据稳健的评估协议
+
+二十一、页面组织应该围绕“会话”和“数据集”，不是围绕按钮动作
+页面拆成“数据收集页”和“模型训练页”是对的，但页面中心对象必须是会话和数据集。
+
+1. 数据收集页面
+
+应该展示：
+
+- 当前活跃会话
+- 历史会话列表
+- 每个会话的起止时间、planned_duration、stop_reason
+- coverage_ratio、valid_second_count、missing_second_count
+- book_stale_second_count、state_stale_second_count
+- 会话内 1s 价格/成交/盘口特征曲线
+- 会话可产出的 inference-ready / training-ready 样本数
+- 按 stratum 的覆盖分布
+
+2. 模型训练页面
+
+应该展示：
+
+- dataset_manifest 作为一等对象
+- included_session_ids
+- feature_recipe_version、label_definition_version、integrity_policy_version
+- sampling_stride_sec、split_definition_version、embargo_sec
+- weighting_version、deployment_target_version、target_census_policy_version、target_window_policy_version、shift_state_definition_version
+- strata_definition_version、strata_fit_ref、weight_estimator_version、weight_fit_ref
+- domain_classifier_version、domain_classifier_fit_ref、shift_diagnostic_version、dataset_status、support_overlap_result
+- evaluation_protocol_version、score_definition_version、prerank_definition_version
+- policy_definition_version、policy_parameter_ref
+- decision_utility_version、utility_parameter_ref、execution_assumption_version、refit_policy_version、multiple_comparison_version
+- train/val/test 的名义样本数和 n_eff
+- target_census_count 与 weighted / unweighted diagnostics 切换
+- baseline 对比
+- 主评分、校准、sharpness、分层 regime 指标
+- block bootstrap 置信区间
+- 冻结 policy 下的决策层回测指标
+
+二十二、当前版本的正式设计结论
+1. 合约研究库的正确底座是会话化 second_state 仓库，而不是扁平训练表。
+2. 标签必须对齐交易所固定 15m 边界，并由同一会话内后续 900 秒自行聚合。
+3. 监督样本必须定义为：
+   D_t = (X_t, Z_t, M_t)
+4. 其中 X_t 必须是单会话内连续 7200 x F 的因果输入，不能跨会话拼接。
+5. 预测目标必须用 (r_open, r_close, u, d) 这样的支持约束友好参数化，不能直接独立回归 OHLC。
+6. “严格完整”必须写成 integrity_policy，并参数化 stale 阈值、字段要求和缺失规则。
+7. 数据层和模型层必须解耦：7200 x F 是数据定义，不是模型结构限制。
+8. 若要谈部署总体 P_*，就必须额外维护独立于手动会话的 target_census_15m；没有它，P_* 只能停留在概念层。
+9. target_census_15m 里必须持久化一个版本化、因果可观测的 shift state S_t = psi_shift(X_t, M_t)；weighting 与 shift diagnostics 只能定义在这个显式空间上。
+10. 第一版 shift_state_definition_version_v1 应固定为 compact_boundary_state_v1，strata_definition_version_v1 应固定为 72 个主 strata 的 coarse_shift_strata_v1。
+11. 手动会话会引入选择偏差，必须定义部署总体 P_*，并用显式分层权重或 DRE 在 S_t 空间上近似修正。
+12. 任何 weighting 之前都必须先做 support overlap、两样本检验和来源可判别性诊断；若诊断失败，数据集只能标记为 research_only。
+13. 即使 overlap 和 diagnostics 通过，weighted validation 也仍然只是 assumption-conditional 的 deployment proxy；它不能证明 full-space 的部署风险已经被完全识别。
+14. 相邻样本 87.5% 重叠，名义样本数会严重高估信息量，必须估计 n_eff。
+15. 训练/验证/测试必须采用 blocked temporal split，并满足 embargo_sec >= 8100。
+16. 单个 outer holdout 不足以支撑强结论，正式报告应采用 rolling-origin，并把 refit policy 与 target census window 一并版本化。
+17. 正式预测对象是 Z_t 的联合分布，不是四个独立点值。
+18. 若 joint density 可得，主指标应是 joint NLL；若不可得，至少同时报告 ES 与 VS_p，并把第一版 VS 参数固定为 p = 0.5。
+19. 边际 PIT 不足以证明联合校准，joint samples 还必须配合 multivariate rank diagnostics；第一版应再用 pre-rank functions 把联合失配拆解成 level、非对称和实体/影线结构问题。
+20. 若 P_* != Q，主评分、校准图、rank histogram、pre-rank diagnostics、regime 汇总都必须统一到目标总体口径。
+21. weighting_version_v2 可以升级为 classifier-based density ratio estimation，但只能建立在 target census、support overlap、shift diagnostics 与显式 shift_state_definition_version 已成立的前提上。
+22. 如果特别关心极端行情，必须 ex ante 定义 ROI 或使用 proper 的 tail-focused scores，不能按 realized outcome 事后筛样本。
+23. 模型比较必须使用依赖数据友好的 block bootstrap；若候选模型很多，还必须控制 data snooping，并报告多模型比较结果。
+24. 预测最优不等于决策最优；最终系统必须同时通过 forecast layer 与 decision layer 的滚动外样本检验。
+25. 决策层必须把 policy、utility、execution assumption 分开版本化；只靠下一根 15m OHLC 标签，并不能离线识别任意 intrabar 策略的真实 PnL。
+26. 第一版 decision layer 最适合固定成 ternary_expected_utility_policy_v1，配合 boundary_rebalance_hold_to_close_v1 和 bar_close_return_with_adverse_excursion_penalty_v1。
+27. 第一阶段最重要的不是把模型做大，而是先拿到稳定、可追溯、可评估的单合约研究数据集。
+
+二十三、参考依据
+下面这些文献或方法论为本设计提供统计依据：
+
+- Gneiting, T. and Raftery, A. E. (2007):
+  proper scoring rules 的基本框架，支持“联合分布就该用 proper score 来评估”
+
+- Gneiting, T., Balabdaoui, F. and Raftery, A. E. (2007):
+  calibration 与 sharpness 的评估框架，支持“概率预测不能只看 point error”
+
+- Scheuerer, M. and Hamill, T. M. (2015):
+  variogram score 对多维依赖结构更敏感，支持“ES 之外还要看 VS_p”
+
+- Alexander, C., Coulon, M., Han, Y. and Meng, X. (2024):
+  比较 multivariate scoring rules 的有限样本判别能力，支持“第一版 Variogram Score 固定 p = 0.5”
+
+- Sugiyama, M., Krauledat, M. and Muller, K.-R. (2007):
+  covariate shift 与 importance weighted cross-validation，支持“手动会话偏差需要显式加权修正”
+
+- Shimodaira, H. (2000):
+  在 covariate shift 下用密度比做 weighted likelihood 校正，支持“importance weighting 的目标是把经验风险向目标总体风险对齐”
+
+- Bickel, S., Brückner, M. and Scheffer, T. (2009):
+  用判别式分类器恢复 covariate shift 下的密度比，支持“weighting_version_v2 可以写成 classifier-based density ratio estimation”
+
+- Quionero-Candela, J., Sugiyama, M., Schwaighofer, A. and Lawrence, N. D. (2009):
+  Dataset Shift in Machine Learning，支持“必须区分目标总体、训练样本分布与可观测的未标注目标域样本”
+
+- Tashman, L. J. (2000):
+  rolling-origin evaluation 的经典框架，支持“单一未来测试块不够，正式报告应跨多个 origin”
+
+- Racine, J. (2000):
+  hv-block cross-validation，支持“依赖数据不能 random split，必须用 block + gap”
+
+- Politis, D. N. and Romano, J. P. (1994):
+  stationary bootstrap，支持“依赖样本的评分均值和模型差异需要 block bootstrap 区间”
+
+- Thorarinsdottir, T. L., Scheuerer, M. and Heinz, C. (2016):
+  multivariate rank histogram 诊断，支持“联合分布不能只做边际校准图”
+
+- Allen, S., Ziegel, J. and Ginsbourger, D. (2024):
+  pre-rank functions 与多变量校准诊断，支持“联合校准应进一步拆解成可解释子结构”
+
+- Gretton, A. et al. (2012):
+  kernel two-sample test，支持“P_* 与 Q 的差异应通过两样本检验显式诊断”
+
+- Lerch, S., Thorarinsdottir, T. L., Ravazzolo, F. and Gneiting, T. (2017):
+  forecaster's dilemma，支持“不能按已发生的极端结果事后筛测试样本”
+
+- Cheng, J. (2024):
+  weighted multivariate scoring rules，支持“若关心极端或风险区域，应使用预先固定且 proper 的 tail-focused scores”
+
+- Jonkers, J., Van Wallendael, G., Duchateau, L. and Van Hoecke, S. (2024):
+  covariate shift 下的 weighted conformal predictive systems，支持“DRE/likelihood-ratio weighting 可进一步进入概率分布校准层”
+
+- Giacomini, R. and White, H. (2006):
+  conditional predictive ability，支持“比较模型时应允许检验状态依赖的优劣”
+
+- Hansen, P. R., Lunde, A. and Nason, J. M. (2011):
+  Model Confidence Set，支持“多模型比较时不能只汇报试出来的赢家”
+
+- Diebold, F. X., Gunther, T. A. and Tay, A. S. (1998):
+  density forecast evaluation，支持“预测分布质量与最终决策价值应区分评估”
+
+- Dehghani et al. (2019):
+  对重叠滑窗问题的讨论，支持“表面样本数不等于有效独立样本数”
+
+这份文档到这里，已经不只是“模型想法”，而是：
+
+- 数据定义规范
+- 样本成熟规范
+- 偏差修正规范
+- 联合分布评估规范
+- 依赖数据统计检验规范
+
+如果后续实现完全按这份规范落地，那么它已经具备比较扎实的数学和统计学支撑，不再只是工程直觉。

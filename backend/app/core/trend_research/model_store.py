@@ -32,7 +32,7 @@ def _resolve_direct_model_path(path: str | Path | None) -> Path:
 def _load_torch_module():
     try:
         return importlib.import_module("torch")
-    except ModuleNotFoundError as exc:
+    except Exception as exc:
         raise RuntimeError("PyTorch is required for direct extrema model persistence") from exc
 
 

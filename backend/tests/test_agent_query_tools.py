@@ -308,6 +308,115 @@ class FakeCtx:
         return "simulated"
 
 
+class StrictSwapManager:
+    def __init__(self):
+        self.calls = []
+
+    def get_local_candles(self, inst_id, timeframe, limit=100, start_time=None, end_time=None, auto_sync=True, inst_type="SPOT"):
+        self.calls.append({
+            "inst_id": inst_id,
+            "timeframe": timeframe,
+            "limit": limit,
+            "inst_type": inst_type,
+        })
+        if inst_id != "RAVE-USDT-SWAP" or inst_type != "SWAP":
+            return []
+        return FakeManager().get_local_candles(
+            inst_id,
+            timeframe,
+            limit=limit,
+            start_time=start_time,
+            end_time=end_time,
+            auto_sync=auto_sync,
+            inst_type=inst_type,
+        )
+
+
+class StrictSwapFetcher:
+    def __init__(self):
+        self.ticker_calls = []
+        self.orderbook_calls = []
+        self.trade_calls = []
+
+    def get_ticker_cached(self, inst_id, inst_type=None):
+        self.ticker_calls.append((inst_id, inst_type))
+        if inst_id != "RAVE-USDT-SWAP" or inst_type != "SWAP":
+            return None
+        return FakeTicker(inst_id=inst_id, last=66.0, open_24h=61.0, vol_24h=777.0)
+
+    def get_orderbook(self, inst_id, size=20):
+        self.orderbook_calls.append((inst_id, size))
+        if inst_id != "RAVE-USDT-SWAP":
+            raise ValueError(f"unexpected inst_id: {inst_id}")
+        return {
+            "inst_id": inst_id,
+            "bids": [{"price": 65.8, "size": 5.0, "total": 5.0, "order_count": 2}],
+            "asks": [{"price": 66.2, "size": 6.0, "total": 6.0, "order_count": 1}],
+            "best_bid": 65.8,
+            "best_ask": 66.2,
+            "spread": 0.4,
+            "timestamp": 1704067200000,
+        }
+
+    def get_recent_trades_local_first(self, inst_id, limit=50, inst_type="SPOT"):
+        self.trade_calls.append((inst_id, limit, inst_type))
+        if inst_id != "RAVE-USDT-SWAP" or inst_type != "SWAP":
+            return []
+        return [
+            FakeTrade(66.0, 1.2, "buy", inst_id=inst_id),
+            FakeTrade(65.5, 0.7, "sell", inst_id=inst_id),
+        ][:limit]
+
+
+class StrictSwapStorage:
+    def __init__(self):
+        self.ticker_calls = []
+        self.trade_calls = []
+
+    def get_latest_ticker(self, inst_id, inst_type="SPOT", max_age_ms=None):
+        self.ticker_calls.append((inst_id, inst_type))
+        if inst_id != "RAVE-USDT-SWAP" or inst_type != "SWAP":
+            return None
+        return FakeTicker(inst_id=inst_id, last=66.0, open_24h=61.0, vol_24h=777.0)
+
+    def get_recent_trades(self, inst_id, limit=50, inst_type="SPOT", max_age_ms=None):
+        self.trade_calls.append((inst_id, limit, inst_type))
+        if inst_id != "RAVE-USDT-SWAP" or inst_type != "SWAP":
+            return []
+        return [
+            FakeTrade(66.0, 1.2, "buy", inst_id=inst_id),
+            FakeTrade(65.5, 0.7, "sell", inst_id=inst_id),
+        ][:limit]
+
+    def get_cost_basis(self, mode):
+        return {}
+
+    def get_symbol_data_inventory(self):
+        return []
+
+
+class StrictSwapCtx:
+    def __init__(self):
+        self.manager_instance = StrictSwapManager()
+        self.fetcher_instance = StrictSwapFetcher()
+        self.storage_instance = StrictSwapStorage()
+
+    def manager(self):
+        return self.manager_instance
+
+    def fetcher(self):
+        return self.fetcher_instance
+
+    def storage(self):
+        return self.storage_instance
+
+    def account(self, mode):
+        return FakeAccount()
+
+    def default_mode(self):
+        return "simulated"
+
+
 class FakeGuardian:
     def get_status(self):
         return {
@@ -332,6 +441,16 @@ def test_agent_query_service_returns_market_snapshot():
     assert result["inst_id"] == "BTC-USDT"
     assert result["ticker"]["last"] == 123.0
     assert result["price_summary"]["spread_bps"] > 0
+
+
+def test_agent_query_service_resolves_swap_market_snapshot_inst_id():
+    service = AgentQueryService(StrictSwapCtx())
+
+    result = service.get_market_snapshot(AgentMarketQueryRequest(inst_id="RAVE-USDT", inst_type="SWAP"))
+
+    assert result["inst_id"] == "RAVE-USDT-SWAP"
+    assert result["ticker"]["inst_id"] == "RAVE-USDT-SWAP"
+    assert service.ctx.fetcher_instance.ticker_calls == [("RAVE-USDT-SWAP", "SWAP")]
 
 
 def test_agent_query_service_returns_multi_timeframe_candles_and_indicators():
@@ -365,6 +484,28 @@ def test_agent_query_service_supports_indicator_aliases():
 
     assert indicators["indicator_snapshots"]["VMA5"]["latest"] is not None
     assert "upper" in indicators["indicator_snapshots"]["BOLL"]["latest"]
+
+
+def test_agent_query_service_supports_vwap_in_trading_context():
+    service = AgentQueryService(FakeCtx())
+
+    context = service.get_trading_context(
+        AgentTradingContextRequest(
+            inst_id="BTC-USDT",
+            inst_type="SPOT",
+            timeframes=["1h"],
+            indicators=["VWAP"],
+            include_orderbook=False,
+            include_recent_trades=False,
+            include_position=False,
+        )
+    )
+
+    snapshot = context["timeframes"]["1H"]["indicator_snapshots"]["VWAP"]
+
+    assert snapshot["latest"] is not None
+    assert snapshot["params"]["mode"] == "cumulative"
+    assert snapshot["params"]["source"] == "hlc3"
 
 
 def test_agent_query_service_returns_orderbook_trades_position_and_analysis_dataset():
@@ -434,6 +575,37 @@ def test_agent_query_service_builds_trading_context_and_alignment(monkeypatch):
     assert context["position"]["summary"]["holding_count"] >= 1
     assert alignment["alignment"] in {"bullish", "mixed", "neutral"}
     assert set(alignment["timeframe_signals"].keys()) == {"1H", "4H"}
+
+
+def test_agent_query_service_resolves_swap_inst_id_across_trading_context():
+    service = AgentQueryService(StrictSwapCtx())
+
+    context = service.get_trading_context(
+        AgentTradingContextRequest(
+            inst_id="RAVE-USDT",
+            inst_type="SWAP",
+            timeframes=["1h", "4h"],
+            candles_limit=20,
+            indicators=["ma5", "VWAP"],
+            include_orderbook=True,
+            include_recent_trades=True,
+            include_position=False,
+        )
+    )
+
+    assert context["inst_id"] == "RAVE-USDT-SWAP"
+    assert context["market_snapshot"]["inst_id"] == "RAVE-USDT-SWAP"
+    assert context["orderbook"]["available"] is True
+    assert context["orderbook"]["inst_id"] == "RAVE-USDT-SWAP"
+    assert context["recent_trades"]["summary"]["trade_count"] == 2
+    assert context["recent_trades"]["inst_id"] == "RAVE-USDT-SWAP"
+    assert context["timeframes"]["1H"]["count"] == 20
+    assert context["timeframes"]["1H"]["indicator_snapshots"]["VWAP"]["latest"] is not None
+    assert context["alignment"]["inst_id"] == "RAVE-USDT-SWAP"
+    assert all(call["inst_id"] == "RAVE-USDT-SWAP" for call in service.ctx.manager_instance.calls)
+    assert all(inst_id == "RAVE-USDT-SWAP" for inst_id, _ in service.ctx.fetcher_instance.ticker_calls)
+    assert all(inst_id == "RAVE-USDT-SWAP" for inst_id, _ in service.ctx.fetcher_instance.orderbook_calls)
+    assert all(inst_id == "RAVE-USDT-SWAP" for inst_id, _, _ in service.ctx.fetcher_instance.trade_calls)
 
 
 def test_agent_query_service_scans_watchlist_and_returns_data_health(monkeypatch):

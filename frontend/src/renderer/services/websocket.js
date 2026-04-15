@@ -1,7 +1,7 @@
 // WebSocket 实时数据服务
 // 连接后端 WebSocket 获取实时行情、账户、订单、成交推送
 
-import { getBaseURL } from './api'
+import { getBaseURL } from './api.js'
 
 class MarketWebSocket {
   constructor() {
@@ -42,6 +42,7 @@ class MarketWebSocket {
       alert: new Set(),    // Set<callback>
       assistantPatrol: new Set(), // Set<callback>
       trendResearch: new Set(), // Set<callback>
+      researchPlatform: new Set(), // Set<callback>
       trendDiagnostics: new Set(), // Set<callback>
     }
     this.trendDiagnosticsConfig = null
@@ -175,6 +176,7 @@ class MarketWebSocket {
     this.listeners.alert.clear()
     this.listeners.assistantPatrol.clear()
     this.listeners.trendResearch.clear()
+    this.listeners.researchPlatform.clear()
     this.listeners.trendDiagnostics.clear()
     this.trendDiagnosticsConfig = null
   }
@@ -559,6 +561,36 @@ class MarketWebSocket {
     }
   }
 
+  subscribeResearchPlatform(callback) {
+    this.listeners.researchPlatform.add(callback)
+
+    if (!this.subscribedChannels.has('research_platform')) {
+      this.subscribedChannels.add('research_platform')
+      if (this.isConnected) {
+        this._sendSubscribe(['research_platform'])
+      }
+    }
+  }
+
+  subscribeDataCenterCollection(callback) {
+    this.subscribeResearchPlatform(callback)
+  }
+
+  unsubscribeResearchPlatform(callback) {
+    this.listeners.researchPlatform.delete(callback)
+
+    if (this.listeners.researchPlatform.size === 0) {
+      this.subscribedChannels.delete('research_platform')
+      if (this.isConnected) {
+        this._sendUnsubscribe(['research_platform'])
+      }
+    }
+  }
+
+  unsubscribeDataCenterCollection(callback) {
+    this.unsubscribeResearchPlatform(callback)
+  }
+
   unsubscribeTrendDiagnostics(callback) {
     this.listeners.trendDiagnostics.delete(callback)
 
@@ -742,7 +774,7 @@ class MarketWebSocket {
 
     // 重新订阅私有通道
     const privateChannels = [...this.subscribedChannels].filter(
-      ch => ['account', 'orders', 'fills', 'alerts', 'assistant_patrol', 'trend_research'].includes(ch)
+      ch => ['account', 'orders', 'fills', 'alerts', 'assistant_patrol', 'trend_research', 'research_platform'].includes(ch)
     )
     if (privateChannels.length > 0) {
       this._sendSubscribe(privateChannels)
@@ -778,6 +810,9 @@ class MarketWebSocket {
           break
         case 'trend_research':
           this._handleTrendResearch(message.data)
+          break
+        case 'research_platform':
+          this._handleResearchPlatform(message.data)
           break
         case 'trend_diagnostics':
           this._handleTrendDiagnostics(message.data)
@@ -918,6 +953,35 @@ class MarketWebSocket {
         callback(payload)
       } catch (error) {
         console.error('[WS] 趋势研究回调执行错误:', error)
+      }
+    }
+  }
+
+  _handleResearchPlatform(payload) {
+    const knownEvents = new Set([
+      'session_updated',
+      'session_started',
+      'session_running',
+      'session_stopping',
+      'session_stopped',
+      'session_finished',
+      'session_failed',
+      'second_flushed',
+      'session_quality_updated',
+      'census_updated',
+      'dataset_manifest_created',
+      'dataset_preview_updated',
+      'training_run_updated',
+    ])
+    if (!payload || !knownEvents.has(payload.event)) {
+      return
+    }
+
+    for (const callback of this.listeners.researchPlatform) {
+      try {
+        callback(payload)
+      } catch (error) {
+        console.error('[WS] 研究平台回调执行错误:', error)
       }
     }
   }

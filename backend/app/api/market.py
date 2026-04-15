@@ -1375,13 +1375,38 @@ async def analyze_market_correlation(
             inst_type=request.inst_type.value,
         )
         if len(candles) < 20:
-            raise HTTPException(status_code=400, detail=f"{symbol} 可用K线不足，至少需要 20 根")
-        return symbol, candles
+            return {
+                "symbol": symbol,
+                "candles": [],
+                "error": "可用K线不足，至少需要 20 根",
+            }
+        return {
+            "symbol": symbol,
+            "candles": candles,
+            "error": "",
+        }
 
     results = await asyncio.gather(*[_load_symbol(symbol) for symbol in unique_symbols])
+    excluded_symbols = [
+        {
+            "symbol": result["symbol"],
+            "reason": result["error"],
+        }
+        for result in results
+        if result["error"]
+    ]
+    valid_results = [result for result in results if not result["error"]]
+    if len(valid_results) < 2:
+        if excluded_symbols:
+            excluded_text = "；".join(f"{item['symbol']}（{item['reason']}）" for item in excluded_symbols)
+            raise HTTPException(status_code=400, detail=f"有效交易对数量不足；已跳过: {excluded_text}")
+        raise HTTPException(status_code=400, detail="有效交易对数量不足")
 
     series_by_symbol: Dict[str, Dict[int, float]] = {}
-    for symbol, candles in results:
+    valid_symbols = [result["symbol"] for result in valid_results]
+    for result in valid_results:
+        symbol = result["symbol"]
+        candles = result["candles"]
         series_by_symbol[symbol] = {int(c.timestamp): float(c.close) for c in candles}
 
     common_timestamps = None
@@ -1394,7 +1419,7 @@ async def analyze_market_correlation(
         raise HTTPException(status_code=400, detail="交易对之间公共时间轴不足，无法计算稳定相关性")
 
     returns_by_symbol: Dict[str, np.ndarray] = {}
-    for symbol in unique_symbols:
+    for symbol in valid_symbols:
         prices = np.array([series_by_symbol[symbol][ts] for ts in common_timestamps], dtype=float)
         returns = np.diff(prices) / prices[:-1]
         if returns.size < 5:
@@ -1405,9 +1430,9 @@ async def analyze_market_correlation(
     heatmap: List[List[float]] = []
     pairs: List[Dict[str, Any]] = []
 
-    for row_index, symbol_a in enumerate(unique_symbols):
+    for row_index, symbol_a in enumerate(valid_symbols):
         row: List[float] = []
-        for col_index, symbol_b in enumerate(unique_symbols):
+        for col_index, symbol_b in enumerate(valid_symbols):
             if row_index == col_index:
                 correlation = 1.0
             else:
@@ -1430,7 +1455,8 @@ async def analyze_market_correlation(
     lowest_pairs = sorted(pairs, key=lambda item: item["correlation"])
 
     return DataResponse(data={
-        "symbols": unique_symbols,
+        "symbols": valid_symbols,
+        "excluded_symbols": excluded_symbols,
         "matrix": matrix,
         "heatmap": heatmap,
         "aligned_points": len(common_timestamps),

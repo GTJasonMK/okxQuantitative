@@ -14,11 +14,11 @@ from .direct_models import (
 from .models import TimeOrderedSplit
 from .sequence_metrics import build_direct_extrema_metrics
 from .tcn_model import DirectExtremaTCN, TORCH_AVAILABLE, TORCH_IMPORT_ERROR, torch
+from .training_constants import DEFAULT_EPOCHS
 
 
 DEFAULT_TRAIN_RATIO = 0.7
 DEFAULT_VALIDATION_RATIO = 0.15
-DEFAULT_EPOCHS = 20
 DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_RETURN_WEIGHT = 1.0
 

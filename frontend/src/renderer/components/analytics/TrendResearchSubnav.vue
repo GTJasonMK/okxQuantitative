@@ -27,7 +27,7 @@ const items = Object.freeze([
   { value: 'overview', label: '结论总览' },
   { value: 'factors', label: '因子分析' },
   { value: 'training', label: '训练模型' },
-  { value: 'diagnostics', label: '过程诊断' },
+  { value: 'diagnostics', label: '运行进度' },
 ]);
 </script>
 

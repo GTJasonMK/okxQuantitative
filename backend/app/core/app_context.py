@@ -29,7 +29,7 @@ from .okx_outbound import (
     get_okx_outbound_governor,
     get_okx_outbound_timeline_store,
 )
-from .trend_research import get_trend_research_service
+from .research_platform import get_research_platform_service
 from .trader import OKXAccount, OKXTrader, TradingManager, get_trading_manager
 from .websocket_manager import (
     OKXWebSocketManager,
@@ -85,7 +85,12 @@ class AppContext:
         return get_okx_outbound_timeline_store()
 
     def trend_research(self):
+        from .trend_research.factory import get_trend_research_service
+
         return get_trend_research_service(self)
+
+    def research_platform(self):
+        return get_research_platform_service(self)
 
     # ========== WebSocket ==========
     def ws_manager(self, mode: Optional[str] = None) -> OKXWebSocketManager:

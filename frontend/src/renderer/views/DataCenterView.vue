@@ -21,7 +21,7 @@
     </header>
 
     <div class="dc-content">
-      <keep-alive include="WatchlistView,InventoryView">
+      <keep-alive include="WatchlistView,DataCollectionView,InventoryView">
         <component :is="activeComponent" />
       </keep-alive>
     </div>
@@ -32,6 +32,7 @@
 import { computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import DataCollectionView from './DataCollectionView.vue';
 import InventoryView from './InventoryView.vue';
 import WatchlistView from './WatchlistView.vue';
 
@@ -44,13 +45,18 @@ const router = useRouter();
 
 const TAB_STORAGE_KEY = 'okxquant.data-center.active-tab';
 const DEFAULT_TAB = 'watchlist';
-const VALID_TABS = new Set(['watchlist', 'inventory']);
+const VALID_TABS = new Set(['watchlist', 'collection', 'inventory']);
 
 const dataTabs = [
   {
     key: 'watchlist',
     label: '关注币种',
     description: '维护唯一监控币种与全量同步入口',
+  },
+  {
+    key: 'collection',
+    label: '秒级采集',
+    description: '启动、观察与审查秒级采集会话',
   },
   {
     key: 'inventory',
@@ -88,9 +94,12 @@ const resolvePreferredTab = () => (
 
 const activeTab = computed(() => resolvePreferredTab());
 
-const activeComponent = computed(() => (
-  activeTab.value === 'inventory' ? InventoryView : WatchlistView
-));
+const activeComponent = computed(() => {
+  if (activeTab.value === 'collection') {
+    return DataCollectionView;
+  }
+  return activeTab.value === 'inventory' ? InventoryView : WatchlistView;
+});
 
 const activeTabHint = computed(() => (
   dataTabs.find(tab => tab.key === activeTab.value)?.description || ''

@@ -1,7 +1,7 @@
 <template>
   <details class="trend-diagnostics-card trend-diagnostics-details">
     <summary class="trend-diagnostics-details-summary">
-      <span>必要细节</span>
+      <span>高级诊断明细</span>
       <span class="trend-diagnostics-block-caption">订阅状态、计数器与最近错误时间</span>
     </summary>
 

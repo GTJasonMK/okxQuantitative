@@ -58,7 +58,7 @@ class ConnectionManager:
     WebSocket 连接管理器
 
     管理所有前端 WebSocket 客户端连接，并转发 OKX 数据
-    支持: ticker(行情), candle(K线), account(账户), order(订单), fill(成交), trend_research, trend_diagnostics
+    支持: ticker(行情), candle(K线), account(账户), order(订单), fill(成交), trend_research, research_platform, trend_diagnostics
     """
 
     def __init__(self):
@@ -108,6 +108,7 @@ class ConnectionManager:
             "alerts": False,        # 是否订阅价格提醒
             "assistant_patrol": False,  # 是否订阅主动巡检机会
             "trend_research": False,  # 是否订阅趋势研究实时推送
+            "research_platform": False,  # 是否订阅研究数据底座事件
             "trend_diagnostics": {
                 "active": False,
                 "inst_id": "",
@@ -454,6 +455,17 @@ class ConnectionManager:
             filter_fn=lambda subs: subs["trend_research"],
         )
 
+    async def _broadcast_research_platform(self, payload: Dict[str, Any]):
+        """广播研究数据底座事件。"""
+        message = json.dumps({
+            "type": "research_platform",
+            "data": payload,
+        }, ensure_ascii=False)
+        await self._send_to_subscribers(
+            message,
+            filter_fn=lambda subs: subs["research_platform"],
+        )
+
     async def _broadcast_trend_diagnostics(self, payload: Dict[str, Any]):
         """广播趋势诊断实时事件。"""
         await self._broadcast_to_subscribers(
@@ -641,6 +653,8 @@ class ConnectionManager:
                 subs["assistant_patrol"] = True
             elif channel == "trend_research":
                 subs["trend_research"] = True
+            elif channel == "research_platform":
+                subs["research_platform"] = True
             elif channel == "trend_diagnostics":
                 inst_id = str(message.get("inst_id") or "")
                 timeline_limit = max(int(message.get("timeline_limit") or 40), 5)
@@ -720,6 +734,8 @@ class ConnectionManager:
                 subs["assistant_patrol"] = False
             elif channel == "trend_research":
                 subs["trend_research"] = False
+            elif channel == "research_platform":
+                subs["research_platform"] = False
             elif channel == "trend_diagnostics":
                 subs["trend_diagnostics"] = {
                     "active": False,
@@ -754,6 +770,7 @@ class ConnectionManager:
         alerts_count = 0
         assistant_patrol_count = 0
         trend_research_count = 0
+        research_platform_count = 0
         trend_diagnostics_count = 0
 
         for subs in self._connections.values():
@@ -771,6 +788,8 @@ class ConnectionManager:
                 assistant_patrol_count += 1
             if subs["trend_research"]:
                 trend_research_count += 1
+            if subs["research_platform"]:
+                research_platform_count += 1
             if subs["trend_diagnostics"]["active"]:
                 trend_diagnostics_count += 1
 
@@ -784,6 +803,7 @@ class ConnectionManager:
             "alerts_subscribers": alerts_count,
             "assistant_patrol_subscribers": assistant_patrol_count,
             "trend_research_subscribers": trend_research_count,
+            "research_platform_subscribers": research_platform_count,
             "trend_diagnostics_subscribers": trend_diagnostics_count,
         }
 
@@ -812,6 +832,17 @@ def _on_trend_research_event(payload: Dict[str, Any]):
 
 
 get_ctx().trend_research().add_listener(_on_trend_research_event)
+
+
+async def _on_research_platform_event(payload: Dict[str, Any]):
+    await connection_manager._broadcast_research_platform(payload)
+
+
+_research_platform_service = get_ctx().research_platform()
+if hasattr(_research_platform_service, "add_listener"):
+    _research_platform_service.add_listener(
+        lambda payload: asyncio.create_task(_on_research_platform_event(payload))
+    )
 
 
 async def _on_trend_diagnostics_event(payload: Dict[str, Any]):

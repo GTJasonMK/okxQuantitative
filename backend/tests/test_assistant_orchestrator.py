@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ import httpx
 
 from app.assistant_runtime.orchestrator import (
     AssistantOrchestrator,
+    AssistantOrchestratorError,
     AssistantUpstreamConnectionError,
 )
 from app.core.data_storage import DataStorage
@@ -240,6 +242,67 @@ class LevelsCompletionClient:
         }
 
 
+class SanitizingHistoryCompletionClient:
+    def __init__(self, orphan_call_id: str):
+        self.orphan_call_id = orphan_call_id
+
+    async def complete(self, *, messages, tools=None, temperature=None):
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            tool_calls = message.get("tool_calls") or []
+            assert all(
+                str((tool_call or {}).get("id") or "").strip() != self.orphan_call_id
+                for tool_call in tool_calls
+            )
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            assert str(message.get("tool_call_id") or "").strip() != self.orphan_call_id
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "坏历史已被忽略，继续分析。",
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 64},
+        }
+
+
+class FailingToolCompletionClient:
+    def __init__(self):
+        self.calls = 0
+
+    async def complete(self, *, messages, tools=None, temperature=None):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("工具失败后不应继续请求上游")
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-fail",
+                                "type": "function",
+                                "function": {
+                                    "name": "build_risk_budget",
+                                    "arguments": "{\"inst_id\":\"BTC-USDT\"}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 73},
+        }
+
+
 def test_data_storage_assistant_session_roundtrip(tmp_path: Path):
     storage = DataStorage(tmp_path / "market.db")
     session_id = storage.create_assistant_session(
@@ -435,6 +498,103 @@ async def test_assistant_orchestrator_supports_levels_tool_and_persists_chart_an
     assert "已识别关键位" in result["assistant_message"]["content"]
     assert result["tool_steps"][0]["tool_name"] == "detect_support_resistance"
     assert isinstance(result["tool_steps"][0]["output"].get("chart_annotations"), list)
+
+
+@pytest.mark.asyncio
+async def test_assistant_orchestrator_skips_orphan_tool_call_history_in_next_turn(tmp_path: Path):
+    storage = DataStorage(tmp_path / "market.db")
+    ctx = FakeCtx(storage)
+    orphan_call_id = "call-orphan"
+    orchestrator = AssistantOrchestrator(
+        ctx,
+        completion_client=SanitizingHistoryCompletionClient(orphan_call_id),
+    )
+    session_id = storage.create_assistant_session(
+        title="BTC 坏历史",
+        kind="agent",
+        mode="simulated",
+        inst_id="BTC-USDT",
+        inst_type="SPOT",
+    )
+    storage.append_assistant_message(session_id, role="user", content="先做一次分析")
+    storage.append_assistant_message(
+        session_id,
+        role="assistant",
+        content="",
+        metadata={
+            "tool_calls": [
+                {
+                    "id": orphan_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "build_risk_budget",
+                        "arguments": "{\"inst_id\":\"BTC-USDT\"}",
+                    },
+                }
+            ],
+        },
+    )
+
+    result = await orchestrator.run_turn(
+        session_id=session_id,
+        user_message="继续分析",
+        inst_id="BTC-USDT",
+        inst_type="SPOT",
+        mode="simulated",
+        market_context={"source": "unit-test"},
+        max_tool_rounds=3,
+    )
+
+    assert "坏历史已被忽略" in result["assistant_message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_orchestrator_persists_error_tool_output_when_tool_execution_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    storage = DataStorage(tmp_path / "market.db")
+    ctx = FakeCtx(storage)
+    orchestrator = AssistantOrchestrator(
+        ctx,
+        completion_client=FailingToolCompletionClient(),
+    )
+    session_id = storage.create_assistant_session(
+        title="BTC 工具失败",
+        kind="agent",
+        mode="simulated",
+        inst_id="BTC-USDT",
+        inst_type="SPOT",
+    )
+    storage.append_assistant_message(session_id, role="user", content="给我一份交易计划")
+
+    def _raise_tool_error(tool_name, arguments):
+        raise AssistantOrchestratorError("工具爆炸")
+
+    monkeypatch.setattr(orchestrator, "_execute_tool", _raise_tool_error, raising=True)
+
+    with pytest.raises(AssistantOrchestratorError, match="工具爆炸"):
+        await orchestrator.run_turn(
+            session_id=session_id,
+            user_message="给我一份交易计划",
+            inst_id="BTC-USDT",
+            inst_type="SPOT",
+            mode="simulated",
+            market_context={"source": "unit-test"},
+            max_tool_rounds=3,
+        )
+
+    detail = storage.get_assistant_session_detail(session_id)
+
+    assert detail is not None
+    assert detail["session"]["status"] == "failed"
+    assert detail["steps"][0]["status"] == "failed"
+    tool_messages = [item for item in detail["messages"] if item["role"] == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "call-fail"
+    payload = json.loads(tool_messages[0]["content"])
+    assert payload["error"] == "工具爆炸"
+    assert payload["tool_name"] == "build_risk_budget"
 
 
 def test_assistant_orchestrator_lists_and_dispatches_new_analysis_tools(tmp_path: Path, monkeypatch):

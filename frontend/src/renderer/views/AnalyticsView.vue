@@ -16,7 +16,7 @@
             市场相关性
           </button>
           <button class="av-tab" :class="{ active: activeAnalyticsTab === 'trendResearch' }" @click="activeAnalyticsTab = 'trendResearch'">
-            趋势研究
+            数据集平台
           </button>
         </nav>
       </div>
@@ -336,7 +336,7 @@
         </div>
         <div class="symbol-picker">
           <button
-            v-for="symbol in availableSymbols.slice(0, 12)"
+            v-for="symbol in correlationAvailableSymbols.slice(0, 12)"
             :key="`corr-${symbol}`"
             class="symbol-chip"
             :class="{ active: correlationFilter.symbols.includes(symbol), disabled: !correlationFilter.symbols.includes(symbol) && correlationFilter.symbols.length >= 6 }"
@@ -344,10 +344,14 @@
           >
             {{ symbol }}
           </button>
-          <span v-if="availableSymbols.length > 12" class="symbol-chip-more">+{{ availableSymbols.length - 12 }}</span>
+          <span v-if="correlationAvailableSymbols.length > 12" class="symbol-chip-more">+{{ correlationAvailableSymbols.length - 12 }}</span>
         </div>
 
         <div v-if="correlationError" class="error-message">{{ correlationError }}</div>
+        <div v-else-if="correlation.excluded_symbols.length > 0" class="info-message">
+          已跳过：
+          {{ correlation.excluded_symbols.map(item => `${item.symbol}（${item.reason}）`).join('；') }}
+        </div>
 
         <div class="correlation-layout">
           <div ref="correlationChartRef" class="correlation-chart"></div>
@@ -393,6 +397,12 @@ import { api } from '../services/api';
 import marketWS from '../services/websocket';
 import { createChart, disposeChart, ensureChartResize, CHART_COLORS } from '../utils/chart';
 import { buildTimeSeriesPoints, createTimeSeriesChartManager } from '../utils/lwcTimeSeriesChart.mjs';
+import {
+  buildCorrelationAvailabilityMessage,
+  extractAvailableBaseSymbols,
+  filterCorrelationSymbols,
+  reconcileCorrelationSelection,
+} from './analyticsCorrelationSymbols.mjs';
 import {
   normalizeMonitorSymbol,
   formatMoney,
@@ -440,11 +450,14 @@ const correlation = reactive({
   matrix: [],
   top_positive: [],
   top_negative: [],
+  excluded_symbols: [],
 });
 const loadingCorrelation = ref(false);
 const correlationError = ref('');
 const correlationChartRef = ref(null);
 
+const DEFAULT_AVAILABLE_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'DOGE-USDT'];
+const availableSymbolRows = ref([]);
 const availableSymbols = ref([]);
 const correlationFilter = reactive({
   instType: 'SPOT',
@@ -529,6 +542,12 @@ let alertListener = null;
 let perfLoadTimer = null;
 
 const buildInstId = (symbol, instType) => (instType === 'SWAP' ? `${symbol}-SWAP` : symbol);
+const correlationAvailableSymbols = computed(() => (
+  filterCorrelationSymbols(availableSymbolRows.value, {
+    instType: correlationFilter.instType,
+    timeframe: correlationFilter.timeframe,
+  })
+));
 
 const formatRatio = (value) => toFiniteNumber(value).toFixed(2);
 const formatNumber = (value, digits = 2) => toFiniteNumber(value).toFixed(digits);
@@ -544,23 +563,22 @@ const loadAvailableSymbols = async () => {
   try {
     const res = await api.getAvailableSymbols();
     if (res.code === 0 && Array.isArray(res.data) && res.data.length > 0) {
-      const unique = [...new Set(res.data.map(item => normalizeMonitorSymbol(item.inst_id || item)).filter(Boolean))];
-      availableSymbols.value = unique;
+      availableSymbolRows.value = res.data;
+      availableSymbols.value = extractAvailableBaseSymbols(res.data);
     } else {
-      availableSymbols.value = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'DOGE-USDT'];
+      availableSymbolRows.value = [];
+      availableSymbols.value = DEFAULT_AVAILABLE_SYMBOLS;
     }
   } catch (error) {
     console.error('加载可用币种失败:', error);
-    availableSymbols.value = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'DOGE-USDT'];
+    availableSymbolRows.value = [];
+    availableSymbols.value = DEFAULT_AVAILABLE_SYMBOLS;
   }
 
   if (!availableSymbols.value.includes(alertForm.symbol)) {
     alertForm.symbol = availableSymbols.value[0] || 'BTC-USDT';
   }
-  correlationFilter.symbols = correlationFilter.symbols.filter(symbol => availableSymbols.value.includes(symbol));
-  if (correlationFilter.symbols.length < 2) {
-    correlationFilter.symbols = availableSymbols.value.slice(0, 3);
-  }
+  syncCorrelationSelection();
 };
 
 const loadAlerts = async () => {
@@ -757,7 +775,17 @@ const updateCorrelationChart = () => {
 };
 
 const loadCorrelation = async () => {
+  if (correlationAvailableSymbols.value.length < 2) {
+    resetCorrelationResult();
+    correlationError.value = buildCorrelationAvailabilityMessage({
+      instType: correlationFilter.instType,
+      timeframe: correlationFilter.timeframe,
+    });
+    return;
+  }
+
   if (correlationFilter.symbols.length < 2) {
+    resetCorrelationResult();
     correlationError.value = '至少选择 2 个币种';
     return;
   }
@@ -779,8 +807,10 @@ const loadCorrelation = async () => {
     correlation.matrix = res.data?.matrix || [];
     correlation.top_positive = res.data?.top_positive || [];
     correlation.top_negative = res.data?.top_negative || [];
+    correlation.excluded_symbols = res.data?.excluded_symbols || [];
     updateCorrelationChart();
   } catch (error) {
+    resetCorrelationResult();
     console.error('加载相关性分析失败:', error);
     correlationError.value = error.response?.data?.detail || error.message || '加载相关性分析失败';
   } finally {
@@ -788,8 +818,28 @@ const loadCorrelation = async () => {
   }
 };
 
+const syncCorrelationSelection = () => {
+  correlationFilter.symbols = reconcileCorrelationSelection(
+    correlationFilter.symbols,
+    correlationAvailableSymbols.value,
+  );
+};
+
+const resetCorrelationResult = () => {
+  correlation.symbols = [];
+  correlation.matrix = [];
+  correlation.top_positive = [];
+  correlation.top_negative = [];
+  correlation.excluded_symbols = [];
+  updateCorrelationChart();
+};
+
 watch(() => performanceFilter.mode, debouncedLoadPerformance);
 watch(() => performanceFilter.instId, debouncedLoadPerformance);
+watch(correlationAvailableSymbols, () => {
+  syncCorrelationSelection();
+  resetCorrelationResult();
+});
 
 onMounted(async () => {
   await Promise.all([
@@ -1376,6 +1426,16 @@ watch(activeAnalyticsTab, (tab) => {
   color: var(--color-danger);
   background: rgba(127, 29, 29, 0.22);
   border: 1px solid rgba(239, 68, 68, 0.3);
+  font-size: 12px;
+}
+
+.info-message {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: rgba(30, 41, 59, 0.24);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   font-size: 12px;
 }
 

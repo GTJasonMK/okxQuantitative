@@ -336,6 +336,45 @@ def volume_ma(volumes: List[float], period: int = 20) -> List[float]:
     return sma(volumes, period)
 
 
+def vwap(
+    high: List[float],
+    low: List[float],
+    close: List[float],
+    volume: List[float],
+    period: Optional[int] = None,
+) -> List[float]:
+    """成交量加权平均价。
+
+    period=None 时返回从序列起点累计的 VWAP；
+    传入 period 时返回 rolling VWAP。
+    """
+    length = len(close)
+    if not (length == len(high) == len(low) == len(volume)):
+        raise ValueError("high/low/close/volume 长度不一致")
+
+    result: List[float] = []
+    weighted_window: List[float] = []
+    volume_window: List[float] = []
+    weighted_sum = 0.0
+    volume_sum = 0.0
+
+    for index in range(length):
+        typical_price = (high[index] + low[index] + close[index]) / 3
+        weighted_value = typical_price * volume[index]
+        weighted_window.append(weighted_value)
+        volume_window.append(volume[index])
+        weighted_sum += weighted_value
+        volume_sum += volume[index]
+
+        if period is not None and len(weighted_window) > period:
+            weighted_sum -= weighted_window.pop(0)
+            volume_sum -= volume_window.pop(0)
+
+        result.append(weighted_sum / volume_sum if volume_sum > 0 else float('nan'))
+
+    return result
+
+
 class IndicatorCalculator:
     """
     指标计算器
@@ -411,6 +450,10 @@ class IndicatorCalculator:
     def volume_ma(self, period: int = 20) -> List[float]:
         """计算成交量MA"""
         return volume_ma(self.volumes, period)
+
+    def vwap(self, period: Optional[int] = None) -> List[float]:
+        """计算 VWAP。"""
+        return vwap(self.highs, self.lows, self.closes, self.volumes, period)
 
     def _get_source(self, source: str) -> List[float]:
         """获取价格源"""

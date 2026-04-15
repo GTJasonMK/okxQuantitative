@@ -22,7 +22,7 @@ from .okx_outbound import (
     get_okx_outbound_governor,
     get_okx_outbound_timeline_store,
 )
-from .trend_research import FeatureBar1s
+from .trend_research.models import FeatureBar1s
 
 __all__ = [
     "DataFetcher",

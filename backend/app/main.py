@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .config import config, DATA_DIR, CONFIG_DIR
-from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner, system_monitor, trend_research
+from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner, system_monitor, data_center_collection, research_platform, trend_research
 from .core.app_context import get_app_context
 from .core.assistant_patrol import get_assistant_patrol
 from .core.data_guardian import get_data_guardian
@@ -161,6 +161,15 @@ async def lifespan(app: FastAPI):
         print(f"  [!] 机会巡检服务启动失败: {e}")
 
     print("-" * 50)
+    print("研究数据底座:")
+    research_platform = ctx.research_platform()
+    try:
+        await research_platform.start()
+        print("  [+] 研究数据底座已启动")
+    except Exception as e:
+        print(f"  [!] 研究数据底座启动失败: {e}")
+
+    print("-" * 50)
     print("趋势研究:")
     trend_research = ctx.trend_research()
     try:
@@ -203,6 +212,11 @@ async def lifespan(app: FastAPI):
         print("数据守护器已关闭")
     except Exception as e:
         print(f"关闭数据守护器失败: {e}")
+    try:
+        await research_platform.stop()
+        print("研究数据底座已关闭")
+    except Exception as e:
+        print(f"关闭研究数据底座失败: {e}")
     try:
         await trend_research.stop()
         print("趋势研究已关闭")
@@ -276,6 +290,8 @@ app.include_router(journal.router)  # 交易日志路由 /api/journal 前缀
 app.include_router(risk.router)  # 风险指标路由 /api/risk 前缀
 app.include_router(scanner.router)  # 市场扫描路由 /api/scanner 前缀
 app.include_router(system_monitor.router)
+app.include_router(data_center_collection.router)
+app.include_router(research_platform.router)
 app.include_router(trend_research.router)
 
 
