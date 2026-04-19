@@ -2,6 +2,7 @@ import pytest
 
 from app.core.data_guardian import (
     MarketDataGuardian,
+    WatchTarget,
     build_default_guardian_settings,
     normalize_guardian_settings,
 )
@@ -13,6 +14,12 @@ class FakeStorage:
 
     def get_sync_record(self, inst_id, timeframe, inst_type="SPOT"):
         return self.records.get((inst_id, timeframe, inst_type))
+
+    def update_sync_record(self, inst_id, timeframe, inst_type="SPOT", **kwargs):
+        key = (inst_id, timeframe, inst_type)
+        if key not in self.records:
+            self.records[key] = {}
+        self.records[key].update(kwargs)
 
 
 class FakeManager:
@@ -121,8 +128,9 @@ def test_normalize_guardian_settings_supports_camel_case_and_defaults():
     assert len(normalized["plans"]) == len(defaults["plans"])
 
 
-def test_build_watch_targets_uses_market_type_and_deduplicates():
+def test_build_watch_targets_uses_market_type_and_deduplicates(monkeypatch):
     guardian = build_guardian()
+    monkeypatch.setattr(guardian, "_load_watched_symbols", lambda: [])
 
     targets, inst_type = guardian._build_watch_targets({
         "selectedSymbols": ["doge-usdt", "DOGE-USDT", "sui-usdt-swap"],
@@ -196,24 +204,25 @@ def test_build_cycle_actions_uses_backfill_queue_and_defers_excess_full_jobs():
         ("DOGE-USDT-SWAP", "1H", "SWAP"): {"candle_count": 320, "history_complete": False},
         ("PEPE-USDT-SWAP", "1H", "SWAP"): {"candle_count": 180, "history_complete": False},
     })
+    settings = build_settings([
+        {"timeframe": "1H", "enabled": True, "bootstrap_days": 180, "archive_mode": "full"},
+    ])
+    settings["max_full_backfill_jobs_per_cycle"] = 1
     guardian = build_guardian(
         storage=storage,
-        settings=build_settings([
-            {"timeframe": "1H", "enabled": True, "bootstrap_days": 180, "archive_mode": "full"},
-        ]),
+        settings=settings,
     )
 
-    watch_targets, _ = guardian._build_watch_targets({
-        "selectedSymbols": ["DOGE-USDT", "PEPE-USDT"],
-        "customSymbols": [],
-        "marketInstType": "SWAP",
-    })
+    watch_targets = [
+        WatchTarget(symbol="DOGE-USDT", inst_id="DOGE-USDT-SWAP", inst_type="SWAP"),
+        WatchTarget(symbol="PEPE-USDT", inst_id="PEPE-USDT-SWAP", inst_type="SWAP"),
+    ]
     actions = guardian._build_cycle_actions(watch_targets)
 
-    assert [action.desired_mode for action in actions] == ["full", "full"]
-    assert [action.selected_mode for action in actions].count("full") == 1
-    assert [action.selected_mode for action in actions].count("incremental") == 1
-    assert any(action.queued_for_full_backfill for action in actions)
+    # 限流 max=1：仅 1 个 full 被选中执行，另 1 个被跳过（不降级）
+    assert len(actions) == 1
+    assert actions[0].desired_mode == "full"
+    assert actions[0].selected_mode == "full"
 
     status = guardian.get_status()
     assert status["backfill_queue_size"] == 2

@@ -114,17 +114,19 @@ def add_watched_symbol(
     records = load_watched_symbols()
     for index, existing in enumerate(records):
         if existing["symbol"] == normalized_symbol:
+            # archive_all_history 在首次添加时确定，后续不允许修改
+            # 要修改必须先删除再重新添加
+            locked_archive = bool(existing.get("archive_all_history", False))
             refreshed = build_watched_symbol_record(
                 normalized_symbol,
                 sync_spot=sync_spot,
                 sync_swap=sync_swap,
-                archive_all_history=archive_all_history,
+                archive_all_history=locked_archive,
                 existing=existing,
             )
             config_changed = (
                 bool(existing.get("sync_spot", True)) != bool(sync_spot)
                 or bool(existing.get("sync_swap", True)) != bool(sync_swap)
-                or bool(existing.get("archive_all_history", False)) != bool(archive_all_history)
             )
             if config_changed:
                 refreshed["updated_at"] = _utc_now_iso()

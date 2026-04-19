@@ -1,6 +1,6 @@
 <template>
   <div class="inventory-view">
-    <!-- 工具栏 + 统计 -->
+    <!-- 工具栏 -->
     <section class="inv-toolbar">
       <div class="inv-toolbar-row">
         <div class="inv-inputs">
@@ -46,8 +46,7 @@
       </div>
     </section>
 
-    <AnalyticsDataInventoryCard mode="guardian-only" />
-
+    <!-- 空状态 -->
     <section v-if="loading && rows.length === 0" class="inv-empty">
       正在读取数据库库存...
     </section>
@@ -57,69 +56,41 @@
       <div class="empty-text">调整搜索或筛选条件后再试。</div>
     </section>
 
-    <section v-else class="inventory-list">
-      <article v-for="row in filteredRows" :key="row.symbol" class="inventory-row">
-        <div class="inventory-row-head">
-          <div class="symbol-block">
-            <div class="symbol-line">
-              <span class="symbol-name">{{ row.symbol }}</span>
+    <!-- 表格式列表 -->
+    <section v-else class="inv-table-shell">
+      <div class="inv-table">
+        <div class="inv-table-head">
+          <span>币种</span>
+          <span>现货</span>
+          <span>永续</span>
+          <span>非K线记录</span>
+          <span>操作</span>
+        </div>
+
+        <article v-for="row in filteredRows" :key="row.symbol" class="inv-row">
+          <!-- 列1: 币种 -->
+          <div class="inv-symbol">
+            <div class="symbol-main">
+              {{ row.symbol }}
               <span class="state-badge" :class="row.watched ? 'badge-watched' : 'badge-orphan'">
-                {{ row.watched ? '已关注' : '孤儿数据' }}
-              </span>
-              <span class="state-badge badge-plain">
-                {{ formatCount(row.storage_counts?.total) }} 条记录
+                {{ row.watched ? '已关注' : '孤儿' }}
               </span>
             </div>
             <div class="symbol-meta">
               <span>{{ row.base_ccy }}</span>
-              <span>周期 {{ row.timeframe_record_count || 0 }}</span>
-              <span>K 线 {{ formatCount(row.candle_count) }}</span>
-              <span v-if="row.activeJobs.length > 0">运行任务 {{ row.activeJobs.length }}</span>
+              <span>{{ formatCount(row.storage_counts?.total) }} 条</span>
             </div>
           </div>
 
-          <div class="row-actions">
-            <button class="btn btn-sm" @click="openMarket(row.symbol)">去行情</button>
-            <button
-              class="btn btn-sm"
-              :disabled="deletingSymbol === row.symbol"
-              @click="openWatchlist(row.symbol)"
-            >
-              去关注页
-            </button>
-            <button
-              v-if="row.watched"
-              class="btn btn-sm"
-              :disabled="repairingSymbol === row.symbol"
-              @click="repairRow(row)"
-            >
-              {{ repairingSymbol === row.symbol ? '补齐中...' : '补齐数据' }}
-            </button>
-            <button
-              class="btn btn-sm btn-danger"
-              :disabled="deletingSymbol === row.symbol"
-              @click="deleteRow(row)"
-            >
-              {{ deletingSymbol === row.symbol ? '处理中...' : (row.watched ? '从关注与库存删除' : '仅删库存') }}
-            </button>
-          </div>
-        </div>
-
-        <div class="inventory-grid">
-          <section class="inventory-panel">
-            <div class="panel-title">现货</div>
-            <DataHealthSummary
-              :row="row.healthRow"
-              inst-type="SPOT"
-              :inst-id="row.spot_inst_id"
-              compact
-            />
-            <div class="panel-value">{{ formatMarketCoverage(row.markets?.SPOT, row.spot_inst_id) }}</div>
-            <div class="panel-targets">
+          <!-- 列2: 现货 -->
+          <div class="inv-market">
+            <div class="market-coverage">{{ formatMarketBrief(row.markets?.SPOT, row.spot_inst_id) }}</div>
+            <DataHealthSummary class="market-health" :row="row.healthRow" inst-type="SPOT" :inst-id="row.spot_inst_id" compact />
+            <div class="market-targets">
               <template v-if="row.watched && getMarketMissingPlans(row, 'SPOT').length > 0">
                 <button
                   v-for="timeframe in getMarketMissingPlans(row, 'SPOT')"
-                  :key="`inventory-spot-${row.symbol}-${timeframe}`"
+                  :key="`spot-${row.symbol}-${timeframe}`"
                   type="button"
                   class="sync-plan-chip"
                   :class="{ 'is-running': !!findActiveSyncJob(row, 'SPOT', timeframe) || isSyncingTarget(row, 'SPOT', timeframe) }"
@@ -127,30 +98,23 @@
                   @click="runTargetedSync(row, 'SPOT', timeframe)"
                 >
                   <span>{{ timeframe }}</span>
-                  <span v-if="findActiveSyncJob(row, 'SPOT', timeframe)">
-                    {{ formatJobStatus(findActiveSyncJob(row, 'SPOT', timeframe)) }}
-                  </span>
+                  <span v-if="findActiveSyncJob(row, 'SPOT', timeframe)">{{ formatJobStatus(findActiveSyncJob(row, 'SPOT', timeframe)) }}</span>
                   <span v-else-if="isSyncingTarget(row, 'SPOT', timeframe)">创建中</span>
                 </button>
               </template>
-              <span v-else-if="row.watched" class="panel-note">关键周期齐</span>
-              <span v-else class="panel-note">先加入关注后再定向补齐</span>
+              <span v-else-if="row.watched" class="sync-plan-note">周期齐全</span>
             </div>
-          </section>
-          <section class="inventory-panel">
-            <div class="panel-title">永续</div>
-            <DataHealthSummary
-              :row="row.healthRow"
-              inst-type="SWAP"
-              :inst-id="row.swap_inst_id"
-              compact
-            />
-            <div class="panel-value">{{ formatMarketCoverage(row.markets?.SWAP, row.swap_inst_id) }}</div>
-            <div class="panel-targets">
+          </div>
+
+          <!-- 列3: 永续 -->
+          <div class="inv-market">
+            <div class="market-coverage">{{ formatMarketBrief(row.markets?.SWAP, row.swap_inst_id) }}</div>
+            <DataHealthSummary class="market-health" :row="row.healthRow" inst-type="SWAP" :inst-id="row.swap_inst_id" compact />
+            <div class="market-targets">
               <template v-if="row.watched && getMarketMissingPlans(row, 'SWAP').length > 0">
                 <button
                   v-for="timeframe in getMarketMissingPlans(row, 'SWAP')"
-                  :key="`inventory-swap-${row.symbol}-${timeframe}`"
+                  :key="`swap-${row.symbol}-${timeframe}`"
                   type="button"
                   class="sync-plan-chip"
                   :class="{ 'is-running': !!findActiveSyncJob(row, 'SWAP', timeframe) || isSyncingTarget(row, 'SWAP', timeframe) }"
@@ -158,39 +122,54 @@
                   @click="runTargetedSync(row, 'SWAP', timeframe)"
                 >
                   <span>{{ timeframe }}</span>
-                  <span v-if="findActiveSyncJob(row, 'SWAP', timeframe)">
-                    {{ formatJobStatus(findActiveSyncJob(row, 'SWAP', timeframe)) }}
-                  </span>
+                  <span v-if="findActiveSyncJob(row, 'SWAP', timeframe)">{{ formatJobStatus(findActiveSyncJob(row, 'SWAP', timeframe)) }}</span>
                   <span v-else-if="isSyncingTarget(row, 'SWAP', timeframe)">创建中</span>
                 </button>
               </template>
-              <span v-else-if="row.watched" class="panel-note">关键周期齐</span>
-              <span v-else class="panel-note">先加入关注后再定向补齐</span>
+              <span v-else-if="row.watched" class="sync-plan-note">周期齐全</span>
             </div>
-          </section>
-          <section class="inventory-panel">
-            <div class="panel-title">非 K 线记录</div>
-            <div class="storage-chip-grid">
-              <span class="storage-chip">ticker {{ formatCount(row.storage_counts?.market_ticker_snapshots) }}</span>
-              <span class="storage-chip">trades {{ formatCount(row.storage_counts?.market_recent_trades) }}</span>
-              <span class="storage-chip">fills {{ formatCount(row.storage_counts?.local_fills) }}</span>
-              <span class="storage-chip">orders {{ formatCount(row.storage_counts?.live_order_records) }}</span>
-              <span class="storage-chip">backtests {{ formatCount(row.storage_counts?.backtest_results) }}</span>
-              <span class="storage-chip">cost {{ formatCount(row.storage_counts?.cost_basis) }}</span>
-            </div>
-          </section>
-        </div>
+          </div>
 
-        <div v-if="row.activeJobs.length > 0" class="job-row">
-          <span
-            v-for="job in row.activeJobs.slice(0, 6)"
-            :key="job.task_id"
-            class="job-chip"
-          >
-            {{ job.inst_type }} · {{ job.timeframe }} · {{ formatJobStatus(job) }}
-          </span>
-        </div>
-      </article>
+          <!-- 列4: 非K线记录 -->
+          <div class="inv-extra">
+            <template v-for="item in getNonZeroStorageCounts(row.storage_counts)" :key="item.key">
+              <span class="storage-chip">{{ item.label }} {{ formatCount(item.value) }}</span>
+            </template>
+            <span v-if="getNonZeroStorageCounts(row.storage_counts).length === 0" class="sync-plan-note">无</span>
+          </div>
+
+          <!-- 列5: 操作 -->
+          <div class="inv-actions-cell">
+            <button class="btn btn-sm" @click="openMarket(row.symbol)">行情</button>
+            <button
+              v-if="row.watched"
+              class="btn btn-sm"
+              :disabled="repairingSymbol === row.symbol"
+              @click="repairRow(row)"
+            >
+              {{ repairingSymbol === row.symbol ? '补齐中' : '补齐' }}
+            </button>
+            <button
+              class="btn btn-sm btn-danger"
+              :disabled="deletingSymbol === row.symbol"
+              @click="deleteRow(row)"
+            >
+              {{ deletingSymbol === row.symbol ? '删除中' : '删除' }}
+            </button>
+          </div>
+
+          <!-- 运行任务行 -->
+          <div v-if="row.activeJobs.length > 0" class="inv-jobs-row">
+            <span
+              v-for="job in row.activeJobs.slice(0, 6)"
+              :key="job.task_id"
+              class="job-chip"
+            >
+              {{ job.inst_type }} · {{ job.timeframe }} · {{ formatJobStatus(job) }}
+            </span>
+          </div>
+        </article>
+      </div>
     </section>
   </div>
 </template>
@@ -199,7 +178,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../services/api';
-import AnalyticsDataInventoryCard from '../components/analytics/AnalyticsDataInventoryCard.vue';
 import DataHealthSummary from '../components/data/DataHealthSummary.vue';
 import { useGuardianSyncPlans, sortGuardianTimeframes } from '../composables/useGuardianSyncPlans';
 import { useMarketDataHealthCatalog } from '../composables/useMarketDataHealthCatalog';
@@ -246,6 +224,15 @@ const {
   loadPlans,
 } = useGuardianSyncPlans();
 
+const EXTRA_STORAGE_KEYS = [
+  { key: 'market_ticker_snapshots', label: 'ticker' },
+  { key: 'market_recent_trades', label: 'trades' },
+  { key: 'local_fills', label: 'fills' },
+  { key: 'live_order_records', label: 'orders' },
+  { key: 'backtest_results', label: 'backtests' },
+  { key: 'cost_basis', label: 'cost' },
+];
+
 const formatCount = (value) => {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric)) return '0';
@@ -254,9 +241,7 @@ const formatCount = (value) => {
 
 const formatJobStatus = (job) => {
   const status = String(job?.status || '').toLowerCase();
-  if (status === 'running') {
-    return `${job?.progress || 0}%`;
-  }
+  if (status === 'running') return `${job?.progress || 0}%`;
   if (status === 'completed') return '已完成';
   if (status === 'failed') return '失败';
   if (status === 'cancelled') return '已取消';
@@ -271,15 +256,20 @@ const normalizeSymbol = (symbol) => {
   return normalized;
 };
 
-const formatMarketCoverage = (market, fallbackInstId) => {
+const formatMarketBrief = (market, fallbackInstId) => {
   if (!market || !Array.isArray(market.timeframes) || market.timeframes.length === 0) {
     return `${fallbackInstId} 尚未入库`;
   }
   const timeframes = sortGuardianTimeframes(market.timeframes.map(item => item.timeframe)).join(' / ');
   const candleCount = formatCount(market.candle_count);
-  const completeCount = Number(market.history_complete_count || 0);
-  const completionText = completeCount > 0 ? ` · 已补齐 ${completeCount} 个周期` : '';
-  return `${timeframes} · ${candleCount} 根${completionText}`;
+  return `${timeframes} · ${candleCount} 根`;
+};
+
+const getNonZeroStorageCounts = (storageCounts) => {
+  if (!storageCounts) return [];
+  return EXTRA_STORAGE_KEYS
+    .filter(item => Number(storageCounts[item.key] || 0) > 0)
+    .map(item => ({ ...item, value: storageCounts[item.key] }));
 };
 
 const buildTargetSyncKey = (symbol, instType, timeframe) => `${symbol}:${instType}:${timeframe}`;
@@ -461,7 +451,11 @@ const cleanOrphans = async () => {
     const res = await api.deleteOrphanInventory();
     const deletedSymbolCount = Number(res?.data?.deleted_symbol_count || 0);
     const deletedTotal = Number(res?.data?.deleted_counts?.total || 0);
-    successMessage.value = `已清理 ${deletedSymbolCount} 个孤儿币种，共删除 ${formatCount(deletedTotal)} 条记录`;
+    const failedSymbols = Array.isArray(res?.data?.failed_symbols) ? res.data.failed_symbols : [];
+    const failedText = failedSymbols.length > 0
+      ? `；${failedSymbols.length} 个币种删除失败`
+      : '';
+    successMessage.value = `已清理 ${deletedSymbolCount} 个孤儿币种，共删除 ${formatCount(deletedTotal)} 条记录${failedText}`;
     await loadInventory();
   } catch (error) {
     errorMessage.value = error?.response?.data?.detail || error?.message || '清理孤儿数据失败';
@@ -503,21 +497,11 @@ const openMarket = async (symbol) => {
   await router.push({ path: '/', query: { symbol } });
 };
 
-const openWatchlist = async (symbol) => {
-  await router.push({
-    path: '/data',
-    query: {
-      tab: 'watchlist',
-      symbol,
-    },
-  });
-};
-
 onMounted(async () => {
   await loadInventory();
   pollTimer = window.setInterval(() => {
     void loadInventory();
-  }, 4000);
+  }, 15000);
 });
 
 onUnmounted(() => {
@@ -538,7 +522,7 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
-/* 工具栏 — 紧凑一体 */
+/* 工具栏 */
 .inv-toolbar {
   flex-shrink: 0;
   padding: 12px 16px;
@@ -639,166 +623,83 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.inventory-title {
-  margin: 10px 0 8px;
-  font-size: 32px;
-  line-height: 1.1;
-}
-
-.inventory-subtitle {
-  max-width: 760px;
-  margin: 0;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.inventory-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(140px, 1fr));
-  gap: 12px;
-  min-width: 460px;
-}
-
-.summary-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.summary-label {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.summary-value {
-  font-size: 24px;
-}
-
-.summary-value.danger {
-  color: var(--color-danger);
-}
-
-.inventory-toolbar,
-.inventory-feedback {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-card);
-}
-
-.toolbar-left,
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.inventory-input {
-  width: 320px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text-primary);
-}
-
-.inventory-select {
-  min-width: 140px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text-primary);
-}
-
-.feedback-success {
-  color: var(--color-success);
-}
-
-.feedback-error {
-  color: var(--color-danger);
-}
-
-.feedback-muted {
-  color: var(--text-muted);
-}
-
-.inventory-empty {
-  display: grid;
-  place-items: center;
-  min-height: 280px;
-  border-radius: 24px;
-  border: 1px dashed var(--border-color);
-  background: rgba(15, 17, 21, 0.7);
-  color: var(--text-secondary);
-  text-align: center;
-}
-
 .empty-title {
-  font-size: 22px;
+  font-size: 16px;
   color: var(--text-primary);
 }
 
 .empty-text {
-  margin-top: 8px;
+  margin-top: 6px;
+  font-size: 12px;
 }
 
-.inventory-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+/* 表格 */
+.inv-table-shell {
+  flex: 1;
   min-height: 0;
   overflow: auto;
 }
 
-.inventory-row {
-  padding: 18px 20px;
-  border-radius: 20px;
-  border: 1px solid var(--border-color);
-  background: rgba(15, 17, 21, 0.94);
+.inv-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
-.inventory-row-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+.inv-table-head {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(160px, 1.5fr) minmax(160px, 1.5fr) minmax(120px, 1fr) minmax(120px, 0.8fr);
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.symbol-line,
-.symbol-meta,
-.job-row,
-.storage-chip-grid {
+.inv-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(160px, 1.5fr) minmax(160px, 1.5fr) minmax(120px, 1fr) minmax(120px, 0.8fr);
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 0.12s ease;
+}
+
+.inv-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 列1: 币种 */
+.inv-symbol {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.symbol-main {
+  display: flex;
+  align-items: center;
   gap: 8px;
-}
-
-.symbol-name {
-  font-size: 22px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .symbol-meta {
-  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
   color: var(--text-muted);
-  font-size: 12px;
 }
 
-.state-badge,
-.job-chip,
-.storage-chip {
-  padding: 6px 10px;
+.state-badge {
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .badge-watched {
@@ -811,61 +712,43 @@ onUnmounted(() => {
   color: var(--color-danger);
 }
 
-.badge-plain {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-secondary);
+/* 列2-3: 现货/永续 */
+.inv-market {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
-.inventory-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.inventory-panel {
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.panel-title {
+.market-coverage {
   font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.panel-value {
-  margin-top: 10px;
-  line-height: 1.6;
+.market-health {
+  margin: 2px 0;
 }
 
-.panel-note {
-  margin-top: 8px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.panel-targets {
+.market-targets {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 4px;
 }
 
 .sync-plan-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
   border: 1px solid rgba(247, 147, 26, 0.18);
   border-radius: 999px;
   background: var(--accent-bg);
   color: var(--gold-color);
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
@@ -884,27 +767,57 @@ onUnmounted(() => {
   color: var(--color-info);
 }
 
-.storage-chip-grid {
-  margin-top: 10px;
+.sync-plan-note {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
-.storage-chip,
-.job-chip {
+/* 列4: 非K线 */
+.inv-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-content: flex-start;
+}
+
+.storage-chip {
+  padding: 2px 7px;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
-.job-row {
-  margin-top: 14px;
-}
-
-.row-actions {
+/* 列5: 操作 */
+.inv-actions-cell {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-content: flex-start;
+}
+
+/* 运行任务行 — 跨列 */
+.inv-jobs-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.04);
+}
+
+.job-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 10px;
 }
 
 .btn-sm {
-  padding: 8px 12px;
+  padding: 6px 10px;
+  font-size: 11px;
 }
 
 .btn-danger {
@@ -912,43 +825,39 @@ onUnmounted(() => {
   color: var(--color-danger);
 }
 
-@media (max-width: 1280px) {
-  .inventory-hero {
-    flex-direction: column;
-  }
-
-  .inventory-summary-grid {
-    min-width: 0;
+@media (max-width: 1100px) {
+  .inv-table-head,
+  .inv-row {
+    grid-template-columns: minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(100px, 0.8fr) minmax(100px, 0.7fr);
   }
 }
 
-@media (max-width: 900px) {
-  .inventory-view {
-    padding: 16px;
+@media (max-width: 768px) {
+  .inv-table-head {
+    display: none;
   }
 
-  .inventory-toolbar,
-  .inventory-feedback,
-  .inventory-row-head {
+  .inv-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 14px 12px;
+    border-radius: var(--radius-lg);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 8px;
+  }
+
+  .inv-toolbar-row {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .toolbar-left,
-  .toolbar-right {
-    flex-wrap: wrap;
+  .inv-stats {
+    margin-left: 0;
+    justify-content: center;
   }
 
-  .inventory-input {
-    width: 100%;
-  }
-
-  .inventory-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .row-actions {
-    flex-wrap: wrap;
+  .inv-actions {
+    justify-content: center;
   }
 }
 </style>

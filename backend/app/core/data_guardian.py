@@ -56,7 +56,7 @@ def build_default_guardian_settings() -> Dict[str, Any]:
     return {
         "enabled": True,
         "scan_interval_seconds": max(120, int(config.cache.sync_cooldown)),
-        "max_full_backfill_jobs_per_cycle": 1,
+        "max_full_backfill_jobs_per_cycle": 3,
         "plans": deepcopy(DEFAULT_TIMEFRAME_PLANS),
     }
 
@@ -157,7 +157,6 @@ class CycleAction:
     bootstrap_days: int
     desired_mode: str
     selected_mode: str
-    queued_for_full_backfill: bool = False
 
 
 class MarketDataGuardian:
@@ -455,7 +454,6 @@ class MarketDataGuardian:
                         "timeframe": action.timeframe,
                         "desired_mode": action.desired_mode,
                         "selected_mode": action.selected_mode,
-                        "queued_for_full_backfill": action.queued_for_full_backfill,
                         "status": "error",
                         "error": str(exc),
                         "finished_at": _utc_now_iso(),
@@ -477,7 +475,7 @@ class MarketDataGuardian:
 
         # 每轮扫描结束后清理过期的 ticker 快照和逐笔成交，防止表无限膨胀
         try:
-            storage.purge_stale_market_streams(max_age_hours=48)
+            self._ctx.storage().purge_stale_market_streams(max_age_hours=48)
         except Exception as exc:
             self._record_error("purge_streams", exc)
 
@@ -675,6 +673,21 @@ class MarketDataGuardian:
                     sync_record, plan,
                     archive_all_history=target.archive_all_history,
                 )
+
+                # rolling 模式已有数据但 history_complete 未标记时，补标为完成
+                # （rolling 不追求全量历史，有窗口数据即视为完整）
+                if (
+                    desired_mode == "incremental"
+                    and sync_record
+                    and int(sync_record.get("candle_count", 0) or 0) > 0
+                    and not bool(sync_record.get("history_complete", False))
+                    and plan.get("archive_mode") != "full"
+                ):
+                    storage.update_sync_record(
+                        target.inst_id, plan["timeframe"], target.inst_type,
+                        history_complete=True,
+                    )
+
                 action = CycleAction(
                     key=f"{target.inst_type}:{target.inst_id}:{plan['timeframe']}",
                     target=target,
@@ -688,11 +701,11 @@ class MarketDataGuardian:
                     full_actions.append(action)
 
         selected_backfill_keys = self._select_backfill_keys(full_actions)
-        for action in actions:
-            if action.desired_mode == "full" and action.key not in selected_backfill_keys:
-                action.selected_mode = "incremental"
-                action.queued_for_full_backfill = True
-        return actions
+        # 未排到的 full 任务直接跳过（不降级为其他模式），等下轮轮转
+        return [
+            action for action in actions
+            if action.desired_mode != "full" or action.key in selected_backfill_keys
+        ]
 
     def _sync_action(self, action: CycleAction) -> Dict[str, Any]:
         manager = self._ctx.manager()
@@ -724,7 +737,6 @@ class MarketDataGuardian:
             "timeframe": action.timeframe,
             "desired_mode": action.desired_mode,
             "selected_mode": action.selected_mode,
-            "queued_for_full_backfill": action.queued_for_full_backfill,
             "status": "success",
             "finished_at": _utc_now_iso(),
             **(result or {}),

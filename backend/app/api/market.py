@@ -1238,6 +1238,7 @@ async def delete_inventory_symbol(
             detail = f"删除本地库存失败且恢复关注列表失败: {str(exc)}；回滚错误: {rollback_error}"
         raise HTTPException(status_code=500, detail=detail)
 
+    await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
     _request_guardian_run_now_safely("delete_inventory_symbol")
 
     return DataResponse(data={
@@ -1267,6 +1268,7 @@ async def delete_orphan_inventory(
         "total": 0,
     }
     deleted_symbols: List[str] = []
+    failed_symbols: List[Dict[str, str]] = []
 
     for row in orphan_rows:
         symbol = row.get("symbol")
@@ -1278,10 +1280,15 @@ async def delete_orphan_inventory(
             symbol,
             reason="孤儿库存已删除，后台同步任务已取消",
         )
-        deleted_counts = await asyncio.to_thread(storage.delete_symbol_related_data, symbol)
-        deleted_symbols.append(symbol)
-        for key in aggregate_deleted_counts:
-            aggregate_deleted_counts[key] += int(deleted_counts.get(key, 0) or 0)
+        try:
+            deleted_counts = await asyncio.to_thread(storage.delete_symbol_related_data, symbol)
+            deleted_symbols.append(symbol)
+            for key in aggregate_deleted_counts:
+                aggregate_deleted_counts[key] += int(deleted_counts.get(key, 0) or 0)
+        except Exception as exc:
+            failed_symbols.append({"symbol": symbol, "error": str(exc)})
+        finally:
+            await asyncio.to_thread(storage.unblock_symbol_writes, symbol)
 
     _request_guardian_run_now_safely("delete_orphan_inventory")
 
@@ -1289,6 +1296,7 @@ async def delete_orphan_inventory(
         "deleted_symbols": deleted_symbols,
         "deleted_symbol_count": len(deleted_symbols),
         "deleted_counts": aggregate_deleted_counts,
+        "failed_symbols": failed_symbols,
     })
 
 

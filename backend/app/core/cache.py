@@ -516,13 +516,13 @@ class CachedDataFetcher:
             return self._fetcher.get_funding_rate(inst_id)
         return None
 
-    def get_candles(self, inst_id: str, timeframe: str, limit: int = 100):
+    def get_candles(self, inst_id: str, timeframe: str, limit: int = 100, after=None, before=None):
         """获取K线（带计数）"""
         if self._fetcher:
             if self._requires_legacy_pre_acquire():
                 self._acquire_api_quota()
             try:
-                return self._fetcher.get_candles(inst_id, timeframe, limit)
+                return self._fetcher.get_candles(inst_id, timeframe, limit, after=after, before=before)
             except Exception as e:
                 print(f"[CachedDataFetcher] 获取K线失败 {inst_id}: {e}")
                 return []

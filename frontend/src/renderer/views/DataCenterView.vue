@@ -21,7 +21,7 @@
     </header>
 
     <div class="dc-content">
-      <keep-alive include="WatchlistView,DataCollectionView,InventoryView">
+      <keep-alive include="WatchlistView,DataCollectionView,InventoryView,GuardianView">
         <component :is="activeComponent" />
       </keep-alive>
     </div>
@@ -33,6 +33,7 @@ import { computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import DataCollectionView from './DataCollectionView.vue';
+import GuardianView from './GuardianView.vue';
 import InventoryView from './InventoryView.vue';
 import WatchlistView from './WatchlistView.vue';
 
@@ -45,7 +46,7 @@ const router = useRouter();
 
 const TAB_STORAGE_KEY = 'okxquant.data-center.active-tab';
 const DEFAULT_TAB = 'watchlist';
-const VALID_TABS = new Set(['watchlist', 'collection', 'inventory']);
+const VALID_TABS = new Set(['watchlist', 'collection', 'inventory', 'guardian']);
 
 const dataTabs = [
   {
@@ -62,6 +63,11 @@ const dataTabs = [
     key: 'inventory',
     label: '数据库库存',
     description: '审查本地数据覆盖、孤儿记录与清理状态',
+  },
+  {
+    key: 'guardian',
+    label: '数据守护',
+    description: '后台数据守护器的状态监控与归档策略配置',
   },
 ];
 
@@ -97,6 +103,9 @@ const activeTab = computed(() => resolvePreferredTab());
 const activeComponent = computed(() => {
   if (activeTab.value === 'collection') {
     return DataCollectionView;
+  }
+  if (activeTab.value === 'guardian') {
+    return GuardianView;
   }
   return activeTab.value === 'inventory' ? InventoryView : WatchlistView;
 });
