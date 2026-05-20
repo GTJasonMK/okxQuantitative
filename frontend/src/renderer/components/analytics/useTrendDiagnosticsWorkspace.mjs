@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { api } from '../../services/api';
 import marketWS from '../../services/websocket';
 import { createLatestOnly } from '../../utils/async';
+import { bindRealtimeConnection } from '../../utils/realtimeConnection.mjs';
 import { applyTrendDiagnosticsEvent, buildTrendDiagnosticsState } from './trendDiagnosticsState.mjs';
 
 const DEFAULT_TIMELINE_LIMIT = 40;
@@ -12,6 +13,12 @@ export function useTrendDiagnosticsWorkspace(options = {}) {
   const loading = ref(false);
   const error = ref('');
   const latestRequest = createLatestOnly();
+  const { attachRealtimeConnection, detachRealtimeConnection } = bindRealtimeConnection({
+    realtime: marketWS,
+    errorRef: error,
+    connectMessage: '趋势诊断实时连接失败',
+    disconnectMessage: '趋势诊断实时连接已断开',
+  });
 
   const handleDiagnosticsEvent = (payload) => {
     state.value = applyTrendDiagnosticsEvent(state.value, payload);
@@ -64,14 +71,13 @@ export function useTrendDiagnosticsWorkspace(options = {}) {
   onMounted(() => {
     const initialInstId = options.initialInstId || '';
     void loadSnapshot(initialInstId);
-    marketWS.connect().catch((connectError) => {
-      error.value = connectError.message || '趋势诊断实时连接失败';
-    });
+    attachRealtimeConnection();
     subscribeDiagnostics(initialInstId);
   });
 
   onBeforeUnmount(() => {
     latestRequest.abort();
+    detachRealtimeConnection();
     unsubscribeDiagnostics();
   });
 

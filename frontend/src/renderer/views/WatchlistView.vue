@@ -449,15 +449,9 @@ const addSymbol = async () => {
       archiveAllHistory: newArchiveAll.value,
     });
     const syncJobs = Array.isArray(res?.data?.sync_jobs) ? res.data.sync_jobs.length : 0;
-    const syncDeferred = Boolean(res?.data?.sync_deferred);
-    const syncMessage = String(res?.data?.sync_message || '').trim();
     successMessage.value = res?.data?.existed
       ? `${symbol} 已在关注列表中`
-      : (
-          syncDeferred || syncJobs <= 0
-            ? (syncMessage || `${symbol} 已加入关注，当前未启动同步任务，待连接恢复后会自动同步。`)
-            : `${symbol} 已加入关注，已启动 ${syncJobs} 个后台同步任务`
-        );
+      : `${symbol} 已加入关注，已启动 ${syncJobs} 个后台同步任务`;
     newSymbol.value = '';
     newArchiveAll.value = false;
     await loadPageData();

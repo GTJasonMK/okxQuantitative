@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { api } from '../../services/api';
 import marketWS from '../../services/websocket';
+import { bindRealtimeConnection } from '../../utils/realtimeConnection.mjs';
 import {
   DEFAULT_TREND_LOOKBACK_SECONDS,
   formatTrendLookbackLabel,
@@ -28,6 +29,12 @@ export function useTrendResearchWorkspace() {
   const recentProcess = ref(buildTrendProcessPanelModel());
   const refreshVersion = ref(0);
   const trainingRunPayload = ref(null);
+  const { attachRealtimeConnection, detachRealtimeConnection } = bindRealtimeConnection({
+    realtime: marketWS,
+    errorRef: error,
+    connectMessage: '趋势研究实时连接失败',
+    disconnectMessage: '趋势研究实时连接已断开',
+  });
 
   const selectedTrendRow = computed(() => {
     return rows.value.find((row) => row.instId === selectedInstId.value) || null;
@@ -105,13 +112,12 @@ export function useTrendResearchWorkspace() {
 
   onMounted(() => {
     void loadSharedData();
-    marketWS.connect().catch((connectError) => {
-      console.warn('[TrendResearch] 建立实时连接失败:', connectError);
-    });
+    attachRealtimeConnection();
     marketWS.subscribeTrendResearch(handleTrendResearchUpdate);
   });
 
   onBeforeUnmount(() => {
+    detachRealtimeConnection();
     marketWS.unsubscribeTrendResearch(handleTrendResearchUpdate);
   });
 

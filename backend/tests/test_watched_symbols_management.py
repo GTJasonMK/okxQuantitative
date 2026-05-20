@@ -395,29 +395,26 @@ def test_start_watchlist_sync_jobs_respects_enabled_guardian_plans(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_watched_symbol_succeeds_even_when_fetcher_unavailable(tmp_path, monkeypatch):
+async def test_create_watched_symbol_rolls_back_when_fetcher_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(preferences_store, "PREFERENCES_FILE", tmp_path / "prefs.json", raising=True)
 
     guardian = _FakeGuardian()
     monkeypatch.setattr(market_api, "get_data_guardian", lambda: guardian)
 
-    response = await market_api.create_watched_symbol(
-        WatchedSymbolCreateRequest(symbol="btc"),
-        manager=_FakeManager(fetcher=None),
-    )
+    with pytest.raises(HTTPException) as exc:
+        await market_api.create_watched_symbol(
+            WatchedSymbolCreateRequest(symbol="btc"),
+            manager=_FakeManager(fetcher=None),
+        )
 
-    assert response.data is not None
-    assert response.data.watched_symbol.symbol == "BTC-USDT"
-    assert response.data.existed is False
-    assert response.data.sync_jobs == []
-    assert response.data.sync_deferred is True
-    assert "交易所连接当前不可用" in response.data.sync_message
-    assert [item["symbol"] for item in load_watched_symbols()] == ["BTC-USDT"]
-    assert guardian.run_now_calls == 1
+    assert exc.value.status_code == 503
+    assert "新增关注币种已回滚" in exc.value.detail
+    assert load_watched_symbols() == []
+    assert guardian.run_now_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_create_watched_symbol_keeps_record_when_sync_job_start_fails(tmp_path, monkeypatch):
+async def test_create_watched_symbol_rolls_back_when_sync_job_start_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(preferences_store, "PREFERENCES_FILE", tmp_path / "prefs.json", raising=True)
 
     guardian = _FakeGuardian()
@@ -428,34 +425,47 @@ async def test_create_watched_symbol_keeps_record_when_sync_job_start_fails(tmp_
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
-    response = await market_api.create_watched_symbol(
-        WatchedSymbolCreateRequest(symbol="eth-usdt"),
-        manager=_FakeManager(fetcher=object()),
-    )
+    with pytest.raises(HTTPException) as exc:
+        await market_api.create_watched_symbol(
+            WatchedSymbolCreateRequest(symbol="eth-usdt"),
+            manager=_FakeManager(fetcher=object()),
+        )
 
-    assert response.data is not None
-    assert response.data.watched_symbol.symbol == "ETH-USDT"
-    assert response.data.existed is False
-    assert response.data.sync_jobs == []
-    assert response.data.sync_deferred is True
-    assert "boom" in response.data.sync_message
-    assert [item["symbol"] for item in load_watched_symbols()] == ["ETH-USDT"]
-    assert guardian.run_now_calls == 1
+    assert exc.value.status_code == 500
+    assert "新增关注币种已回滚" in exc.value.detail
+    assert "boom" in exc.value.detail
+    assert load_watched_symbols() == []
+    assert guardian.run_now_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_create_watched_symbol_succeeds_when_guardian_run_now_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(preferences_store, "PREFERENCES_FILE", tmp_path / "prefs.json", raising=True)
     monkeypatch.setattr(market_api, "get_data_guardian", lambda: _FailingGuardian())
+    monkeypatch.setattr(
+        market_api,
+        "_start_watchlist_sync_jobs",
+        lambda *args, **kwargs: [{
+            "task_id": "task-1",
+            "inst_id": "SOL-USDT",
+            "inst_type": "SPOT",
+            "timeframe": "1H",
+            "mode": "window",
+            "days": 30,
+            "status": "running",
+            "created_at": "2026-04-20T00:00:00+00:00",
+        }],
+    )
 
     response = await market_api.create_watched_symbol(
         WatchedSymbolCreateRequest(symbol="sol"),
-        manager=_FakeManager(fetcher=None),
+        manager=_FakeManager(fetcher=object()),
     )
 
     assert response.data is not None
     assert response.data.watched_symbol.symbol == "SOL-USDT"
     assert response.data.existed is False
+    assert response.data.sync_jobs[0].task_id == "task-1"
     assert [item["symbol"] for item in load_watched_symbols()] == ["SOL-USDT"]
 
 
@@ -499,7 +509,7 @@ async def test_delete_watched_symbol_succeeds_when_guardian_run_now_fails(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_market_api_ticker_uses_local_storage_when_fetcher_missing(tmp_path):
+async def test_market_api_ticker_returns_503_when_fetcher_missing(tmp_path):
     storage = DataStorage(tmp_path / "market.db")
     now_ms = int(time.time() * 1000)
     storage.save_ticker_snapshot(
@@ -521,20 +531,20 @@ async def test_market_api_ticker_uses_local_storage_when_fetcher_missing(tmp_pat
         inst_type="SPOT",
     )
 
-    response = await market_api.get_ticker(
-        "BTC-USDT",
-        inst_type=market_api.InstTypeEnum.SPOT,
-        fetcher=None,
-        storage=storage,
-    )
+    with pytest.raises(HTTPException) as exc:
+        await market_api.get_ticker(
+            "BTC-USDT",
+            inst_type=market_api.InstTypeEnum.SPOT,
+            fetcher=None,
+            storage=storage,
+        )
 
-    assert response.data is not None
-    assert response.data.inst_id == "BTC-USDT"
-    assert response.data.last == 30123.5
+    assert exc.value.status_code == 503
+    assert "行情抓取器不可用" in exc.value.detail
 
 
 @pytest.mark.asyncio
-async def test_market_api_tickers_and_trades_use_local_storage_when_fetcher_missing(tmp_path):
+async def test_market_api_tickers_and_trades_return_503_when_fetcher_missing(tmp_path):
     storage = DataStorage(tmp_path / "market.db")
     now_ms = int(time.time() * 1000)
     storage.save_ticker_snapshot(
@@ -569,21 +579,22 @@ async def test_market_api_tickers_and_trades_use_local_storage_when_fetcher_miss
         inst_type="SPOT",
     )
 
-    tickers_response = await market_api.get_tickers(
-        inst_type=market_api.InstTypeEnum.SPOT,
-        fetcher=None,
-        storage=storage,
-    )
-    trades_response = await market_api.get_recent_trades(
-        "ETH-USDT",
-        limit=30,
-        inst_type=market_api.InstTypeEnum.SPOT,
-        fetcher=None,
-        storage=storage,
-    )
+    with pytest.raises(HTTPException) as tickers_exc:
+        await market_api.get_tickers(
+            inst_type=market_api.InstTypeEnum.SPOT,
+            fetcher=None,
+            storage=storage,
+        )
+    with pytest.raises(HTTPException) as trades_exc:
+        await market_api.get_recent_trades(
+            "ETH-USDT",
+            limit=30,
+            inst_type=market_api.InstTypeEnum.SPOT,
+            fetcher=None,
+            storage=storage,
+        )
 
-    assert tickers_response.data
-    assert tickers_response.data[0].inst_id == "ETH-USDT"
-    assert tickers_response.data[0].last == 2050.5
-    assert trades_response.data
-    assert trades_response.data[0]["trade_id"] == "eth-1"
+    assert tickers_exc.value.status_code == 503
+    assert "行情抓取器不可用" in tickers_exc.value.detail
+    assert trades_exc.value.status_code == 503
+    assert "行情抓取器不可用" in trades_exc.value.detail

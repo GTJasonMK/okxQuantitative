@@ -313,6 +313,131 @@ class CachedDataFetcher:
                     updated[model.inst_id] = model
                     self._ticker_cache[cache_key] = (updated, now)
 
+    def _require_remote_fetcher(self) -> DataFetcher:
+        if self._fetcher is None:
+            raise RuntimeError("行情抓取器不可用")
+        return self._fetcher
+
+    def _get_fresh_cached_ticker(self, cache_key: str, now: float) -> Optional[Any]:
+        with self._cache_lock:
+            cached = self._ticker_cache.get(cache_key)
+        if cached is None:
+            return None
+        data, ts = cached
+        if now - ts >= config.cache.ticker_cache_ttl:
+            return None
+        return data
+
+    def _cache_ticker_dict(self, cache_key: str, ticker_dict: Dict[str, Any], now: float) -> Dict[str, Any]:
+        with self._cache_lock:
+            self._ticker_cache[cache_key] = (ticker_dict, now)
+            for inst_id, ticker in ticker_dict.items():
+                self._ticker_cache[inst_id] = (ticker, now)
+        return ticker_dict
+
+    def get_ticker_strict(self, inst_id: str, inst_type: Optional[str] = None) -> Optional[Ticker]:
+        now = time.time()
+        normalized_inst_type = self._normalize_inst_type(inst_type, inst_id=inst_id)
+        cached_ticker = self._get_fresh_cached_ticker(inst_id, now)
+        if cached_ticker is not None:
+            return cached_ticker
+
+        storage = self._get_storage()
+        max_age_ms = int(config.cache.ticker_cache_ttl * 1000)
+        if storage:
+            local_ticker = storage.get_latest_ticker(
+                inst_id,
+                inst_type=normalized_inst_type,
+                max_age_ms=max_age_ms,
+            )
+            if local_ticker is not None:
+                self._cache_ticker_entry(inst_id, local_ticker, now)
+                return local_ticker
+
+        fetcher = self._require_remote_fetcher()
+        if self._requires_legacy_pre_acquire():
+            self._acquire_api_quota()
+        ticker = fetcher.get_ticker(inst_id)
+        if ticker is None:
+            return None
+        if storage:
+            storage.save_ticker_snapshot(
+                ticker,
+                inst_type=normalized_inst_type,
+                source="rest",
+            )
+        self._cache_ticker_entry(inst_id, ticker, now)
+        return self._coerce_ticker_model(ticker)
+
+    def get_tickers_strict(self, inst_type: str = "SPOT") -> Dict[str, Any]:
+        normalized_inst_type = self._normalize_inst_type(inst_type)
+        cache_key = f"all_tickers_{normalized_inst_type}"
+        now = time.time()
+        cached_tickers = self._get_fresh_cached_ticker(cache_key, now)
+        if isinstance(cached_tickers, dict):
+            return cached_tickers
+
+        storage = self._get_storage()
+        max_age_ms = int(config.cache.ticker_cache_ttl * 1000)
+        if storage:
+            local_tickers = storage.get_latest_tickers(
+                inst_type=normalized_inst_type,
+                max_age_ms=max_age_ms,
+            )
+            if local_tickers:
+                return self._cache_ticker_dict(
+                    cache_key,
+                    {ticker.inst_id: ticker for ticker in local_tickers},
+                    now,
+                )
+
+        fetcher = self._require_remote_fetcher()
+        if self._requires_legacy_pre_acquire():
+            self._acquire_api_quota()
+        from .data_fetcher import InstType
+
+        tickers = fetcher.get_tickers(InstType(normalized_inst_type))
+        ticker_dict = {ticker.inst_id: ticker for ticker in tickers}
+        if ticker_dict and storage:
+            storage.save_ticker_snapshots(
+                list(ticker_dict.values()),
+                inst_type=normalized_inst_type,
+                source="rest",
+            )
+        return self._cache_ticker_dict(cache_key, ticker_dict, now) if ticker_dict else {}
+
+    def get_recent_trades_strict(
+        self,
+        inst_id: str,
+        limit: int = 50,
+        *,
+        inst_type: Optional[str] = None,
+    ) -> List[MarketTrade]:
+        normalized_inst_type = self._normalize_inst_type(inst_type, inst_id=inst_id)
+        storage = self._get_storage()
+        max_age_ms = int(config.cache.ticker_cache_ttl * 1000)
+        if storage:
+            local_trades = storage.get_recent_trades(
+                inst_id,
+                limit=limit,
+                inst_type=normalized_inst_type,
+                max_age_ms=max_age_ms,
+            )
+            if len(local_trades) >= limit:
+                return local_trades
+
+        fetcher = self._require_remote_fetcher()
+        if self._requires_legacy_pre_acquire():
+            self._acquire_api_quota()
+        trades = fetcher.get_recent_trades(inst_id, limit)
+        if trades and storage:
+            storage.save_recent_trades(
+                trades,
+                inst_type=normalized_inst_type,
+                source="rest",
+            )
+        return trades[:limit] if trades else []
+
     def get_ticker_cached(self, inst_id: str, inst_type: Optional[str] = None):
         """本地优先获取单个交易对行情，缺失时再调用远端并落库。"""
         now = time.time()

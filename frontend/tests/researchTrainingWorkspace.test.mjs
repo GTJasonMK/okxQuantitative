@@ -25,6 +25,7 @@ test('useResearchTrainingWorkspace exposes weighted toggle and baseline data', (
   assert.ok('datasetCreateError' in workspace);
   assert.ok('trainingActionPending' in workspace);
   assert.ok('trainingActionError' in workspace);
+  assert.ok('realtimeError' in workspace);
   assert.equal(typeof workspace.loadCollectionSessions, 'function');
   assert.equal(typeof workspace.createDatasetManifest, 'function');
   assert.equal(typeof workspace.startTrainingRun, 'function');
@@ -240,4 +241,23 @@ test('workspace surfaces blocking training runs when dataset deletion is rejecte
     workspace.datasetActionError.value,
     'delete referenced training runs first：run-1',
   );
+});
+
+test('workspace exposes realtime connection errors to UI state', async () => {
+  const workspace = useResearchTrainingWorkspace({
+    realtime: {
+      async connect() {
+        throw new Error('research ws failed');
+      },
+      subscribeResearchPlatform() {},
+      unsubscribeResearchPlatform() {},
+      addConnectionListener() {},
+      removeConnectionListener() {},
+    },
+  });
+
+  workspace.attachRealtime();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(workspace.realtimeError.value, 'research ws failed');
 });

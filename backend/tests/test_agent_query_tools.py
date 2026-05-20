@@ -633,6 +633,39 @@ def test_agent_query_service_scans_watchlist_and_returns_data_health(monkeypatch
     assert health["summary"]["enabled_timeframes"] == ["1H", "4H", "1D"]
 
 
+def test_agent_query_service_scan_watchlist_exposes_failures_without_fabricated_rows(monkeypatch):
+    monkeypatch.setattr(
+        agent_queries,
+        "load_watched_symbols",
+        lambda: [
+            {"symbol": "BTC-USDT", "spot_inst_id": "BTC-USDT", "swap_inst_id": "BTC-USDT-SWAP", "sync_spot": True, "sync_swap": True},
+        ],
+        raising=True,
+    )
+    monkeypatch.setattr(agent_queries, "get_data_guardian", lambda ctx=None: FakeGuardian(), raising=True)
+
+    class FailingManager(FakeManager):
+        def get_local_candles(self, *args, **kwargs):
+            raise RuntimeError("candles unavailable")
+
+    class FailingCtx(FakeCtx):
+        def manager(self):
+            return FailingManager()
+
+    service = AgentQueryService(FailingCtx())
+
+    scan = service.scan_watchlist_context(
+        AgentWatchlistScanRequest(inst_type="SPOT", timeframes=["1h", "4h"], limit=10)
+    )
+
+    assert scan["summary"]["scan_count"] == 1
+    row = scan["rows"][0]
+    assert row["available"] is False
+    assert "candles unavailable" in row["error"]
+    assert "signal_score" not in row
+    assert "ticker" not in row
+
+
 def test_agent_query_service_builds_market_structure_and_risk_budget(monkeypatch):
     monkeypatch.setattr(agent_queries, "load_watched_symbols", lambda: [{"symbol": "BTC-USDT"}], raising=True)
     monkeypatch.setattr(agent_queries, "get_data_guardian", lambda ctx=None: FakeGuardian(), raising=True)
@@ -691,6 +724,19 @@ def test_agent_query_service_detects_levels_projection_and_opportunities(monkeyp
         assert "key_levels" in patrol["candidates"][0]
         assert "setup_status" in patrol["candidates"][0]
         assert "trade_plan" in patrol["candidates"][0]
+
+
+def test_agent_query_service_keeps_empty_levels_when_no_confirmed_extrema():
+    service = AgentQueryService(FakeCtx())
+
+    levels = service.detect_support_resistance(
+        AgentSupportResistanceRequest(inst_id="BTC-USDT", inst_type="SPOT", timeframes=["1h", "4h"])
+    )
+
+    assert levels["supports"] == []
+    assert levels["resistances"] == []
+    assert levels["summary"]["nearest_support"] is None
+    assert levels["summary"]["nearest_resistance"] is None
 
 
 def test_agent_query_service_builds_trade_setup_and_watchlist_correlation(monkeypatch):

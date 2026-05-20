@@ -9,13 +9,14 @@ import platform
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .config import config, DATA_DIR, CONFIG_DIR
 from .api import market, backtest, trading, live, preferences, websocket, assistant, agent, journal, risk, scanner, system_monitor, data_center_collection, research_platform, trend_research
+from .api.security import get_cors_allowed_origins, require_sensitive_write_access
 from .core.app_context import get_app_context
 from .core.assistant_patrol import get_assistant_patrol
 from .core.data_guardian import get_data_guardian
@@ -23,6 +24,34 @@ from .strategies import discover_strategies, load_external_strategies, get_strat
 
 # 记录启动时间
 _start_time = time.time()
+_HEALTH_COMPONENTS: dict[str, dict[str, object]] = {
+    "config": {"healthy": True, "required": True, "detail": "pending"},
+    "websocket": {"healthy": False, "required": True, "detail": "not_started"},
+    "data_guardian": {"healthy": False, "required": True, "detail": "not_started"},
+    "assistant_patrol": {"healthy": False, "required": False, "detail": "not_started"},
+    "research_platform": {"healthy": False, "required": True, "detail": "not_started"},
+    "trend_research": {"healthy": True, "required": False, "detail": "not_enabled"},
+}
+
+
+def _set_component_health(name: str, *, healthy: bool, required: bool, detail: str = "") -> None:
+    _HEALTH_COMPONENTS[name] = {
+        "healthy": bool(healthy),
+        "required": bool(required),
+        "detail": str(detail or ""),
+    }
+
+
+def _health_snapshot() -> dict[str, dict[str, object]]:
+    return {name: dict(state) for name, state in _HEALTH_COMPONENTS.items()}
+
+
+def _required_health_failures() -> list[str]:
+    return [
+        name
+        for name, state in _HEALTH_COMPONENTS.items()
+        if bool(state.get("required")) and not bool(state.get("healthy"))
+    ]
 
 
 def _handle_task_exception(loop, context):
@@ -114,6 +143,12 @@ async def lifespan(app: FastAPI):
 
     # 启动时配置验证
     warnings, errors = _validate_config()
+    _set_component_health(
+        "config",
+        healthy=not errors,
+        required=True,
+        detail="ok" if not errors else "；".join(str(item) for item in errors),
+    )
 
     print("=" * 50)
     print("OKX量化交易系统 - 后端服务启动")
@@ -139,8 +174,10 @@ async def lifespan(app: FastAPI):
     try:
         await ctx.start_ws()
         print("  [+] OKX WebSocket 连接已建立")
+        _set_component_health("websocket", healthy=True, required=True, detail="ok")
     except Exception as e:
         print(f"  [!] WebSocket 启动失败: {e}")
+        _set_component_health("websocket", healthy=False, required=True, detail=str(e))
 
     print("-" * 50)
     print("数据守护器:")
@@ -148,8 +185,10 @@ async def lifespan(app: FastAPI):
     try:
         await guardian.start()
         print("  [+] 本地数据守护器已启动")
+        _set_component_health("data_guardian", healthy=True, required=True, detail="ok")
     except Exception as e:
         print(f"  [!] 数据守护器启动失败: {e}")
+        _set_component_health("data_guardian", healthy=False, required=True, detail=str(e))
 
     print("-" * 50)
     print("主动巡检:")
@@ -157,8 +196,10 @@ async def lifespan(app: FastAPI):
     try:
         await patrol.start()
         print("  [+] 机会巡检服务已启动")
+        _set_component_health("assistant_patrol", healthy=True, required=False, detail="ok")
     except Exception as e:
         print(f"  [!] 机会巡检服务启动失败: {e}")
+        _set_component_health("assistant_patrol", healthy=False, required=False, detail=str(e))
 
     print("-" * 50)
     print("研究数据底座:")
@@ -166,20 +207,31 @@ async def lifespan(app: FastAPI):
     try:
         await research_platform.start()
         print("  [+] 研究数据底座已启动")
+        _set_component_health("research_platform", healthy=True, required=True, detail="ok")
     except Exception as e:
         print(f"  [!] 研究数据底座启动失败: {e}")
+        _set_component_health("research_platform", healthy=False, required=True, detail=str(e))
 
     print("-" * 50)
     print("趋势研究:")
     trend_research = ctx.trend_research()
+    trend_required = bool(ctx.cfg.trend_research.enabled and ctx.cfg.trend_research.whitelist)
     try:
         await trend_research.start()
         if ctx.cfg.trend_research.enabled and ctx.cfg.trend_research.whitelist:
             print(f"  [+] 趋势研究已启动: {len(ctx.cfg.trend_research.whitelist)} 个永续")
+            _set_component_health("trend_research", healthy=True, required=True, detail="ok")
         else:
             print("  [+] 趋势研究未启用或白名单为空")
+            _set_component_health(
+                "trend_research",
+                healthy=True,
+                required=False,
+                detail="disabled_or_empty_whitelist",
+            )
     except Exception as e:
         print(f"  [!] 趋势研究启动失败: {e}")
+        _set_component_health("trend_research", healthy=False, required=trend_required, detail=str(e))
 
     # 显示配置警告
     if warnings:
@@ -243,7 +295,7 @@ app = FastAPI(
 # 配置CORS（允许Electron前端访问）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 开发阶段允许所有来源
+    allow_origins=list(get_cors_allowed_origins()),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -258,8 +310,8 @@ async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, HTTPException):
         raise exc
 
-    error_detail = str(exc)
-    print(f"[ERROR] {request.method} {request.url.path}: {error_detail}")
+    error_id = f"err-{int(time.time() * 1000)}"
+    print(f"[ERROR] {error_id} {request.method} {request.url.path}: {exc}")
     print(traceback.format_exc())
 
     return JSONResponse(
@@ -267,13 +319,8 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "code": 500,
             "message": "服务器内部错误",
-            "detail": error_detail,
+            "error_id": error_id,
         },
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-        }
     )
 
 
@@ -311,7 +358,15 @@ async def root():
 @app.get("/health", tags=["系统"])
 async def health_check():
     """健康检查"""
-    return {"status": "healthy"}
+    failed_components = _required_health_failures()
+    payload = {
+        "status": "healthy" if not failed_components else "degraded",
+        "failed_components": failed_components,
+        "components": _health_snapshot(),
+    }
+    if failed_components:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 def _format_uptime(seconds: float) -> str:
@@ -575,7 +630,10 @@ async def get_okx_config():
 
 
 @app.post("/config/okx", tags=["配置"])
-async def save_okx_config(req: OKXConfigRequest):
+async def save_okx_config(
+    req: OKXConfigRequest,
+    _guard: None = Depends(require_sensitive_write_access),
+):
     """保存OKX配置到.env文件（支持模拟盘和实盘两组密钥）"""
     env_path = CONFIG_DIR / ".env"
 
@@ -705,7 +763,10 @@ async def get_assistant_config():
 
 
 @app.post("/config/assistant", tags=["配置"])
-async def save_assistant_config(req: AIAssistantConfigRequest):
+async def save_assistant_config(
+    req: AIAssistantConfigRequest,
+    _guard: None = Depends(require_sensitive_write_access),
+):
     """保存 AI 助手配置到 .env，并立即更新运行时配置。"""
     env_path = CONFIG_DIR / ".env"
     existing_lines = _load_env_lines(env_path)
@@ -759,7 +820,9 @@ async def save_assistant_config(req: AIAssistantConfigRequest):
 
 
 @app.post("/config/okx/test", tags=["配置"])
-async def test_okx_connection():
+async def test_okx_connection(
+    _guard: None = Depends(require_sensitive_write_access),
+):
     """测试OKX API连接（公共行情 + 私有账户权限）"""
     if not config.okx.is_valid():
         return {

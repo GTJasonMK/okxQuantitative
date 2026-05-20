@@ -30,7 +30,7 @@ from ..agent.schemas import (
     AgentWatchlistScanRequest,
 )
 from ..models.schemas import DataResponse
-from .deps import get_ctx
+from .deps import get_ctx, require_sensitive_write_access
 
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
@@ -250,6 +250,7 @@ async def analyze_watchlist_correlation(
 @router.post("/analyze/python", response_model=DataResponse, summary="执行受限 Python 市场分析")
 async def analyze_market_with_python(
     request: AgentPythonAnalysisRequest,
+    _guard: None = Depends(require_sensitive_write_access),
     service: AgentQueryService = Depends(get_agent_service),
 ):
     try:

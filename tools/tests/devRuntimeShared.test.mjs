@@ -22,9 +22,17 @@ const close = (server) => new Promise((resolve, reject) => {
   server.close((error) => (error ? reject(error) : resolve()));
 });
 
-test('findAvailablePort returns the preferred port when it is free', async () => {
+test('findAvailablePort returns the preferred port when it is free', async (t) => {
   const probe = net.createServer();
-  await listen(probe, 0, '127.0.0.1');
+  try {
+    await listen(probe, 0, '127.0.0.1');
+  } catch (error) {
+    if (error?.code === 'EPERM') {
+      t.skip('sandbox disallows binding local sockets');
+      return;
+    }
+    throw error;
+  }
   const address = probe.address();
   const preferredPort = address.port;
   await close(probe);
@@ -37,9 +45,17 @@ test('findAvailablePort returns the preferred port when it is free', async () =>
   assert.equal(resolvedPort, preferredPort);
 });
 
-test('findAvailablePort falls back when the preferred port is occupied', async () => {
+test('findAvailablePort falls back when the preferred port is occupied', async (t) => {
   const occupied = net.createServer();
-  await listen(occupied, 0, '127.0.0.1');
+  try {
+    await listen(occupied, 0, '127.0.0.1');
+  } catch (error) {
+    if (error?.code === 'EPERM') {
+      t.skip('sandbox disallows binding local sockets');
+      return;
+    }
+    throw error;
+  }
   const address = occupied.address();
 
   const resolvedPort = await findAvailablePort({

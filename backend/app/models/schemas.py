@@ -259,8 +259,6 @@ class WatchedSymbolCreatePayload(BaseModel):
     watched_symbol: WatchedSymbolModel
     existed: bool = Field(default=False, description="是否已存在")
     sync_jobs: List[SyncJobStatusModel] = Field(default_factory=list, description="已创建的后台同步任务")
-    sync_deferred: bool = Field(default=False, description="是否暂未启动同步任务")
-    sync_message: str = Field(default="", description="同步状态说明")
 
 
 class WatchedSymbolListResponse(BaseResponse):

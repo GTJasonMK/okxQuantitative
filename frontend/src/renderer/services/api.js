@@ -6,6 +6,9 @@ import { createLatestOnly } from '../utils/async.js';
 import { resolveRuntimeBackendUrl } from '../utils/runtimeConfig.mjs';
 
 const inflightGetRequests = new Map();
+const WRITE_METHODS = new Set(['post', 'put', 'patch', 'delete']);
+const TRUSTED_WRITE_HEADER_NAME = 'X-OKXQ-Client';
+const TRUSTED_WRITE_HEADER_VALUE = 'desktop';
 
 const buildRequestKey = (config = {}) => {
   const method = String(config.method || 'get').toUpperCase();
@@ -65,7 +68,20 @@ export const getBaseURL = () => {
 
 // 请求拦截器（生产环境不打日志，避免高频请求拖慢主线程）
 instance.interceptors.request.use(
-  (config) => config,
+  (config) => {
+    const method = String(config.method || 'get').toLowerCase();
+    if (WRITE_METHODS.has(method)) {
+      if (typeof config.headers?.set === 'function') {
+        config.headers.set(TRUSTED_WRITE_HEADER_NAME, TRUSTED_WRITE_HEADER_VALUE);
+      } else {
+        config.headers = {
+          ...(config.headers || {}),
+          [TRUSTED_WRITE_HEADER_NAME]: TRUSTED_WRITE_HEADER_VALUE,
+        };
+      }
+    }
+    return config;
+  },
   (error) => Promise.reject(error)
 );
 
@@ -133,6 +149,55 @@ export const waitForBackend = async (maxRetries = 10, intervalMs = 1000) => {
   }
   console.error(`[API] 后端连接失败，已重试 ${maxRetries} 次`);
   return false;
+};
+
+const createGetWithParams = (url) => {
+  return (params = {}) => instance.get(url, { params });
+};
+
+const createGetById = (buildUrl) => {
+  return (resourceId) => instance.get(buildUrl(resourceId));
+};
+
+const createPostWithBody = (url) => {
+  return (payload = {}) => instance.post(url, payload);
+};
+
+const createPostAction = (buildUrl) => {
+  return (resourceId) => instance.post(buildUrl(resourceId));
+};
+
+const createDeleteById = (buildUrl) => {
+  return (resourceId) => instance.delete(buildUrl(resourceId));
+};
+
+const DATA_CENTER_COLLECTION_BASE = '/api/data-center/collections';
+const RESEARCH_PLATFORM_BASE = '/api/research-platform';
+
+const RESEARCH_PLATFORM_API = {
+  // 采集会话统一走 data-center 路径，避免与 /api/research-platform/sessions 语义分叉
+  getResearchPlatformSessions: createGetWithParams(`${DATA_CENTER_COLLECTION_BASE}/sessions`),
+  getResearchPlatformSessionDetail: createGetById((sessionId) => `${DATA_CENTER_COLLECTION_BASE}/sessions/${sessionId}`),
+  createResearchPlatformSession: createPostWithBody(`${DATA_CENTER_COLLECTION_BASE}/sessions`),
+  stopResearchPlatformSession: createPostAction((sessionId) => `${DATA_CENTER_COLLECTION_BASE}/sessions/${sessionId}/stop`),
+  getResearchPlatformCensusStatus: () => instance.get(`${DATA_CENTER_COLLECTION_BASE}/census/status`),
+  getResearchPlatformDatasets: createGetWithParams(`${RESEARCH_PLATFORM_BASE}/datasets`),
+  getResearchPlatformDatasetDetail: createGetById((datasetId) => `${RESEARCH_PLATFORM_BASE}/datasets/${datasetId}`),
+  getResearchPlatformDatasetPreview: createGetById((datasetId) => `${RESEARCH_PLATFORM_BASE}/datasets/${datasetId}/preview`),
+  createResearchPlatformDataset: createPostWithBody(`${RESEARCH_PLATFORM_BASE}/datasets`),
+  deleteResearchPlatformDataset: createDeleteById((datasetId) => `${RESEARCH_PLATFORM_BASE}/datasets/${datasetId}`),
+  getResearchPlatformTrainingRuns: createGetWithParams(`${RESEARCH_PLATFORM_BASE}/training-runs`),
+  getResearchPlatformTrainingRun: createGetById((runId) => `${RESEARCH_PLATFORM_BASE}/training-runs/${runId}`),
+  createResearchPlatformTrainingRun: createPostWithBody(`${RESEARCH_PLATFORM_BASE}/training-runs`),
+};
+
+const DATA_CENTER_COLLECTION_API = {
+  getDataCenterCollectionSessions: createGetWithParams(`${DATA_CENTER_COLLECTION_BASE}/sessions`),
+  getDataCenterCollectionSessionDetail: createGetById((sessionId) => `${DATA_CENTER_COLLECTION_BASE}/sessions/${sessionId}`),
+  createDataCenterCollectionSession: createPostWithBody(`${DATA_CENTER_COLLECTION_BASE}/sessions`),
+  stopDataCenterCollectionSession: createPostAction((sessionId) => `${DATA_CENTER_COLLECTION_BASE}/sessions/${sessionId}/stop`),
+  deleteDataCenterCollectionSession: createDeleteById((sessionId) => `${DATA_CENTER_COLLECTION_BASE}/sessions/${sessionId}`),
+  getDataCenterCollectionCensusStatus: () => instance.get(`${DATA_CENTER_COLLECTION_BASE}/census/status`),
 };
 
 // API方法
@@ -212,82 +277,8 @@ export const api = {
   async updateTrendResearchConfig(data) {
     return instance.put('/api/trend-research/config', data);
   },
-
-  async getResearchPlatformSessions(params = {}) {
-    return instance.get('/api/research-platform/sessions', { params });
-  },
-
-  async getResearchPlatformSessionDetail(sessionId) {
-    return instance.get(`/api/research-platform/sessions/${sessionId}`);
-  },
-
-  async createResearchPlatformSession(payload) {
-    return instance.post('/api/research-platform/sessions', payload);
-  },
-
-  async stopResearchPlatformSession(sessionId) {
-    return instance.post(`/api/research-platform/sessions/${sessionId}/stop`);
-  },
-
-  async getResearchPlatformCensusStatus() {
-    return instance.get('/api/research-platform/census/status');
-  },
-
-  async getDataCenterCollectionSessions(params = {}) {
-    return instance.get('/api/data-center/collections/sessions', { params });
-  },
-
-  async getDataCenterCollectionSessionDetail(sessionId) {
-    return instance.get(`/api/data-center/collections/sessions/${sessionId}`);
-  },
-
-  async createDataCenterCollectionSession(payload) {
-    return instance.post('/api/data-center/collections/sessions', payload);
-  },
-
-  async stopDataCenterCollectionSession(sessionId) {
-    return instance.post(`/api/data-center/collections/sessions/${sessionId}/stop`);
-  },
-
-  async deleteDataCenterCollectionSession(sessionId) {
-    return instance.delete(`/api/data-center/collections/sessions/${sessionId}`);
-  },
-
-  async getDataCenterCollectionCensusStatus() {
-    return instance.get('/api/data-center/collections/census/status');
-  },
-
-  async getResearchPlatformDatasets(params = {}) {
-    return instance.get('/api/research-platform/datasets', { params });
-  },
-
-  async getResearchPlatformDatasetDetail(datasetId) {
-    return instance.get(`/api/research-platform/datasets/${datasetId}`);
-  },
-
-  async getResearchPlatformDatasetPreview(datasetId) {
-    return instance.get(`/api/research-platform/datasets/${datasetId}/preview`);
-  },
-
-  async createResearchPlatformDataset(payload) {
-    return instance.post('/api/research-platform/datasets', payload);
-  },
-
-  async deleteResearchPlatformDataset(datasetId) {
-    return instance.delete(`/api/research-platform/datasets/${datasetId}`);
-  },
-
-  async getResearchPlatformTrainingRuns(params = {}) {
-    return instance.get('/api/research-platform/training-runs', { params });
-  },
-
-  async getResearchPlatformTrainingRun(runId) {
-    return instance.get(`/api/research-platform/training-runs/${runId}`);
-  },
-
-  async createResearchPlatformTrainingRun(payload) {
-    return instance.post('/api/research-platform/training-runs', payload);
-  },
+  ...RESEARCH_PLATFORM_API,
+  ...DATA_CENTER_COLLECTION_API,
 
   async getAssistantStatus() {
     return instance.get('/api/assistant/status');

@@ -18,3 +18,9 @@ test('websocket exposes data center collection subscription aliases', async () =
   assert.match(source, /unsubscribeDataCenterCollection/);
   assert.match(source, /subscribeResearchPlatform/);
 });
+
+test('data collection workspace no longer keeps dead legacy api aliases', async () => {
+  const source = await fs.readFile(new URL('../src/renderer/views/useDataCollectionWorkspace.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /listDataCenterCollectionSessions/);
+  assert.doesNotMatch(source, /getDataCenterCollectionSession\(/);
+});

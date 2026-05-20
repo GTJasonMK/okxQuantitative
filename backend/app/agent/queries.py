@@ -1,18 +1,39 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.app_context import AppContext
 from ..core.holdings import build_holdings_base
 from ..core.indicators import IndicatorCalculator
 from ..core.data_guardian import get_data_guardian
 from ..core.risk_control import build_risk_summary, evaluate_order_risk, get_risk_control_store
-from ..utils.datetimes import parse_iso_datetime
 from ..utils.mode import normalize_mode
-from ..utils.timeframes import TIMEFRAME_TO_MS
-from ..utils.watched_symbols_store import load_watched_symbols, normalize_watched_symbol
+from ..utils.numbers import safe_float_convert as _safe_float
+from ..utils.watched_symbols_store import load_watched_symbols
+from .query_utils import (
+    _age_ms_from_iso,
+    _average,
+    _build_horizontal_annotation,
+    _build_trendline_annotation,
+    _dedupe_timeframes,
+    _format_order_number,
+    _health_status_from_score,
+    _latest_valid,
+    _normalize_inst_type,
+    _normalize_timeframe,
+    _pearson_correlation,
+    _resolve_analysis_inst_id,
+    _resolve_query_inst_id,
+    _safe_json_value,
+    _serialize_candle,
+    _serialize_health_row,
+    _serialize_indicator_payload,
+    _serialize_optional_health_row,
+    _summarize_position_snapshot,
+    _trend_label,
+    _utc_now_iso,
+)
 from .schemas import (
     AgentAlignmentQueryRequest,
     AgentCapabilityDescriptor,
@@ -40,264 +61,6 @@ from .schemas import (
     AgentTradingContextRequest,
     AgentWatchlistScanRequest,
 )
-
-
-_TIMEFRAME_ALIASES: Dict[str, str] = {
-    "1m": "1m",
-    "3m": "3m",
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1h": "1H",
-    "2h": "2H",
-    "4h": "4H",
-    "6h": "6H",
-    "12h": "12H",
-    "1d": "1D",
-    "1w": "1W",
-    "1M": "1M",
-}
-
-
-def _safe_json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (bool, int, str)):
-        return value
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return None
-        return value
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Mapping):
-        return {str(key): _safe_json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_safe_json_value(item) for item in value]
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _safe_json_value(value.to_dict())
-    return value
-
-
-def _latest_valid(series: Any) -> Any:
-    if isinstance(series, Mapping):
-        return {str(key): _latest_valid(value) for key, value in series.items()}
-    if not isinstance(series, list):
-        return _safe_json_value(series)
-    for item in reversed(series):
-        value = _safe_json_value(item)
-        if value is not None:
-            return value
-    return None
-
-
-def _normalize_timeframe(value: str) -> str:
-    raw = str(value or "").strip()
-    if raw in TIMEFRAME_TO_MS:
-        return raw
-    normalized = _TIMEFRAME_ALIASES.get(raw.lower())
-    if normalized and normalized in TIMEFRAME_TO_MS:
-        return normalized
-    if raw.endswith("M") and raw in TIMEFRAME_TO_MS:
-        return raw
-    raise ValueError(f"不支持的 timeframe: {value}")
-
-
-def _normalize_inst_type(inst_id: str, inst_type: Optional[str]) -> str:
-    raw = str(inst_type or "").upper().strip()
-    if raw in {"SPOT", "SWAP", "FUTURES", "OPTION"}:
-        return raw
-    return "SWAP" if str(inst_id or "").upper().endswith("-SWAP") else "SPOT"
-
-
-def _serialize_candle(candle: Any) -> Dict[str, Any]:
-    return {
-        "timestamp": int(getattr(candle, "timestamp", 0) or 0),
-        "datetime": getattr(candle, "datetime").isoformat(),
-        "open": _safe_json_value(float(getattr(candle, "open", 0) or 0)),
-        "high": _safe_json_value(float(getattr(candle, "high", 0) or 0)),
-        "low": _safe_json_value(float(getattr(candle, "low", 0) or 0)),
-        "close": _safe_json_value(float(getattr(candle, "close", 0) or 0)),
-        "volume": _safe_json_value(float(getattr(candle, "volume", 0) or 0)),
-        "volume_ccy": _safe_json_value(float(getattr(candle, "volume_ccy", 0) or 0)),
-    }
-
-
-def _serialize_indicator_payload(name: str, series: Any, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    safe_series = _safe_json_value(series)
-    return {
-        "name": name,
-        "params": params or {},
-        "series": safe_series,
-        "latest": _latest_valid(safe_series),
-    }
-
-
-from ..utils.numbers import safe_float_convert as _safe_float
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _utc_now_iso() -> str:
-    return _utc_now().isoformat()
-
-
-def _format_order_number(value: Any, *, precision: int = 8) -> str:
-    number = _safe_float(value, 0.0)
-    if number <= 0:
-        return ""
-    return f"{number:.{precision}f}".rstrip("0").rstrip(".")
-
-
-def _timeframe_sort_key(timeframe: str) -> int:
-    return int(TIMEFRAME_TO_MS.get(timeframe, 10**18))
-
-
-def _dedupe_timeframes(values: Iterable[str]) -> List[str]:
-    results: List[str] = []
-    seen: set[str] = set()
-    for item in values:
-        normalized = _normalize_timeframe(item)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        results.append(normalized)
-    results.sort(key=_timeframe_sort_key)
-    return results
-
-
-def _age_ms_from_iso(value: Optional[str]) -> Optional[int]:
-    if not value:
-        return None
-    try:
-        dt = parse_iso_datetime(value)
-    except Exception:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return max(0, int((_utc_now() - dt.astimezone(timezone.utc)).total_seconds() * 1000))
-
-
-def _average(values: Iterable[float]) -> float:
-    numbers = [float(item) for item in values]
-    return sum(numbers) / len(numbers) if numbers else 0.0
-
-
-def _resolve_analysis_inst_id(symbol: str, inst_type: str) -> str:
-    normalized_symbol = normalize_watched_symbol(symbol)
-    if not normalized_symbol:
-        return ""
-    normalized_inst_type = _normalize_inst_type(normalized_symbol, inst_type)
-    if normalized_inst_type == "SWAP" and not normalized_symbol.endswith("-SWAP"):
-        return f"{normalized_symbol}-SWAP"
-    if normalized_inst_type != "SWAP" and normalized_symbol.endswith("-SWAP"):
-        return normalized_symbol[:-5]
-    return normalized_symbol
-
-
-def _resolve_query_inst_id(inst_id: str, inst_type: Optional[str]) -> tuple[str, str]:
-    normalized_inst_type = _normalize_inst_type(inst_id, inst_type)
-    return _resolve_analysis_inst_id(inst_id, normalized_inst_type), normalized_inst_type
-
-
-def _pearson_correlation(left: List[float], right: List[float]) -> float:
-    if len(left) != len(right) or len(left) < 2:
-        return 0.0
-
-    left_mean = sum(left) / len(left)
-    right_mean = sum(right) / len(right)
-    numerator = sum((lx - left_mean) * (rx - right_mean) for lx, rx in zip(left, right))
-    left_variance = sum((value - left_mean) ** 2 for value in left)
-    right_variance = sum((value - right_mean) ** 2 for value in right)
-    denominator = math.sqrt(left_variance * right_variance)
-    if denominator <= 0:
-        return 0.0
-    return numerator / denominator
-
-
-def _trend_label(score: float) -> str:
-    if score >= 2:
-        return "bullish"
-    if score <= -2:
-        return "bearish"
-    return "neutral"
-
-
-def _health_status_from_score(score: float) -> str:
-    if score >= 80:
-        return "healthy"
-    if score >= 45:
-        return "degraded"
-    if score > 0:
-        return "stale"
-    return "missing"
-
-
-def _serialize_health_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not isinstance(row, dict):
-        return {
-            "symbol": "",
-            "status": "missing",
-            "health_score": 0.0,
-            "missing_timeframes": [],
-            "markets": {},
-            "has_local_data": False,
-        }
-    return {
-        "symbol": row.get("symbol") or "",
-        "status": row.get("status") or "missing",
-        "health_score": _safe_json_value(row.get("health_score")),
-        "coverage_ratio": _safe_json_value(row.get("coverage_ratio")),
-        "missing_timeframes": _safe_json_value(row.get("missing_timeframes") or []),
-        "watched": bool(row.get("watched", False)),
-        "orphan": bool(row.get("orphan", False)),
-        "has_local_data": bool(row.get("has_local_data", False)),
-        "markets": _safe_json_value(row.get("markets") or {}),
-    }
-
-
-def _summarize_position_snapshot(position: Dict[str, Any]) -> Dict[str, Any]:
-    holdings = position.get("holdings") or []
-    return {
-        "available": bool(position.get("available", False)),
-        "holding_count": int((position.get("summary") or {}).get("holding_count", len(holdings)) or 0),
-        "assets": (position.get("summary") or {}).get("assets") or [],
-    }
-
-
-def _build_horizontal_annotation(price: Any, *, role: str, timeframe: str, strength: float) -> Dict[str, Any]:
-    return {
-        "type": "horizontal",
-        "price": _safe_json_value(price),
-        "meta": {
-            "source": "assistant",
-            "role": role,
-            "timeframe": timeframe,
-            "strength": _safe_json_value(round(strength, 4)),
-        },
-    }
-
-
-def _build_trendline_annotation(
-    *,
-    start_ts: Any,
-    end_ts: Any,
-    start_price: Any,
-    end_price: Any,
-    scenario: str,
-) -> Dict[str, Any]:
-    return {
-        "type": "trendline",
-        "startTs": _safe_json_value(start_ts),
-        "endTs": _safe_json_value(end_ts),
-        "startPrice": _safe_json_value(start_price),
-        "endPrice": _safe_json_value(end_price),
-        "meta": {
-            "source": "assistant",
-            "scenario": scenario,
-        },
-    }
-
 
 class AgentQueryService:
     """给 AI/Agent 提供稳定的只读查询能力。"""
@@ -1174,17 +937,6 @@ class AgentQueryService:
             inst_id = watched.get("spot_inst_id") if inst_type == "SPOT" else watched.get("swap_inst_id")
             if not inst_id:
                 continue
-            fallback_health_row = {
-                "symbol": watched["symbol"],
-                "status": "missing",
-                "health_score": 0.0,
-                "coverage_ratio": 0.0,
-                "missing_timeframes": list(timeframes),
-                "watched": True,
-                "orphan": False,
-                "has_local_data": False,
-                "markets": {},
-            }
             try:
                 market_snapshot = self.get_market_snapshot(
                     AgentMarketQueryRequest(inst_id=inst_id, inst_type=inst_type)
@@ -1208,7 +960,7 @@ class AgentQueryService:
                 orderbook = self.get_orderbook_snapshot(
                     AgentOrderBookQueryRequest(inst_id=inst_id, inst_type=inst_type, depth=request.orderbook_depth)
                 ) if request.include_orderbook else None
-                health_row = health_by_symbol.get(watched["symbol"]) or fallback_health_row
+                health_row = health_by_symbol.get(watched["symbol"])
                 spread_bps = _safe_float((market_snapshot.get("price_summary") or {}).get("spread_bps"))
                 change_24h = _safe_float(ticker_payload.get("change_24h"))
                 volatility_signal = max(
@@ -1241,6 +993,7 @@ class AgentQueryService:
                     "symbol": watched["symbol"],
                     "inst_id": inst_id,
                     "inst_type": inst_type,
+                    "available": True,
                     "price_summary": market_snapshot.get("price_summary") or {},
                     "ticker": ticker_payload,
                     "alignment": {
@@ -1254,7 +1007,7 @@ class AgentQueryService:
                         "available": bool(orderbook and orderbook.get("available")),
                         "imbalance": _safe_json_value(orderbook_imbalance),
                     } if request.include_orderbook else None,
-                    "data_health": _serialize_health_row(health_row),
+                    "data_health": _serialize_optional_health_row(health_row),
                     "signal_score": round(signal_score, 4),
                 })
             except Exception as exc:
@@ -1262,26 +1015,16 @@ class AgentQueryService:
                     "symbol": watched["symbol"],
                     "inst_id": inst_id,
                     "inst_type": inst_type,
-                    "price_summary": {},
-                    "ticker": {},
-                    "alignment": {
-                        "alignment": "missing",
-                        "confidence": 0.0,
-                        "bullish_count": 0,
-                        "bearish_count": 0,
-                        "conflict_timeframes": [],
-                    },
-                    "orderbook": None,
-                    "data_health": _serialize_health_row(health_by_symbol.get(watched["symbol"]) or fallback_health_row),
-                    "signal_score": 0.0,
+                    "available": False,
+                    "data_health": _serialize_optional_health_row(health_by_symbol.get(watched["symbol"])),
                     "error": str(exc),
                 })
 
         sort_key = request.sort_by
         rows.sort(
             key=lambda item: float(
-                item["signal_score"] if sort_key == "signal_score"
-                else (item.get("ticker") or {}).get(sort_key, 0) or 0
+                item.get("signal_score", 0) if sort_key == "signal_score"
+                else ((item.get("ticker") or {}).get(sort_key, 0) if isinstance(item.get("ticker"), dict) else 0) or 0
             ),
             reverse=True,
         )
@@ -1293,7 +1036,7 @@ class AgentQueryService:
             "summary": {
                 "scan_count": len(rows),
                 "watched_count": len(watched_records),
-                "available_count": sum(1 for item in rows if (item.get("ticker") or {}).get("last") is not None),
+                "available_count": sum(1 for item in rows if bool(item.get("available"))),
                 "bullish_count": sum(1 for item in rows if (item.get("alignment") or {}).get("alignment") == "bullish"),
                 "bearish_count": sum(1 for item in rows if (item.get("alignment") or {}).get("alignment") == "bearish"),
                 "top_symbol": rows[0]["symbol"] if rows else "",
@@ -1532,7 +1275,6 @@ class AgentQueryService:
             raise ValueError(f"未找到 {request.inst_id} 的有效最新价")
 
         raw_levels: List[Dict[str, Any]] = []
-        reference_candles: List[Any] = []
         timeframe_weights = {
             timeframe: index + 1
             for index, timeframe in enumerate(_dedupe_timeframes(request.timeframes))
@@ -1546,8 +1288,6 @@ class AgentQueryService:
                 limit=request.limit,
                 auto_sync=request.auto_sync,
             )
-            if not reference_candles and candles:
-                reference_candles = candles
             if len(candles) < 7:
                 continue
             window = 2
@@ -1637,60 +1377,6 @@ class AgentQueryService:
 
         supports = cluster_levels([item for item in raw_levels if item["side"] == "support" and item["price"] < current_price])[:request.max_levels_per_side]
         resistances = cluster_levels([item for item in raw_levels if item["side"] == "resistance" and item["price"] > current_price])[:request.max_levels_per_side]
-
-        if reference_candles and (not supports or not resistances):
-            calculator = IndicatorCalculator(reference_candles)
-            recent_12 = reference_candles[-12:] if len(reference_candles) >= 12 else reference_candles
-            recent_24 = reference_candles[-24:] if len(reference_candles) >= 24 else reference_candles
-            fallback_support_prices = [
-                min(_safe_float(getattr(item, "low", current_price), current_price) for item in recent_12),
-                min(_safe_float(getattr(item, "low", current_price), current_price) for item in recent_24),
-                _safe_float(_latest_valid(calculator.sma(20))),
-            ]
-            fallback_resistance_prices = [
-                max(_safe_float(getattr(item, "high", current_price), current_price) for item in recent_12),
-                max(_safe_float(getattr(item, "high", current_price), current_price) for item in recent_24),
-                current_price + (_safe_float(_latest_valid(calculator.atr(14))) * 1.5),
-            ]
-
-            if not supports:
-                seen_support_prices: set[float] = set()
-                for price in fallback_support_prices:
-                    if not price or price >= current_price:
-                        continue
-                    rounded = round(price, 8)
-                    if rounded in seen_support_prices:
-                        continue
-                    seen_support_prices.add(rounded)
-                    supports.append({
-                        "price": rounded,
-                        "strength": 1.0,
-                        "touch_count": 1,
-                        "timeframes": [_dedupe_timeframes(request.timeframes)[0]],
-                        "latest_timestamp": _safe_float(getattr(reference_candles[-1], "timestamp", 0)),
-                        "distance_pct": round(((rounded - current_price) / current_price) * 100.0, 4),
-                    })
-                    if len(supports) >= request.max_levels_per_side:
-                        break
-            if not resistances:
-                seen_resistance_prices: set[float] = set()
-                for price in fallback_resistance_prices:
-                    if not price or price <= current_price:
-                        continue
-                    rounded = round(price, 8)
-                    if rounded in seen_resistance_prices:
-                        continue
-                    seen_resistance_prices.add(rounded)
-                    resistances.append({
-                        "price": rounded,
-                        "strength": 1.0,
-                        "touch_count": 1,
-                        "timeframes": [_dedupe_timeframes(request.timeframes)[0]],
-                        "latest_timestamp": _safe_float(getattr(reference_candles[-1], "timestamp", 0)),
-                        "distance_pct": round(((rounded - current_price) / current_price) * 100.0, 4),
-                    })
-                    if len(resistances) >= request.max_levels_per_side:
-                        break
 
         invalidation_levels: List[Dict[str, Any]] = []
         if supports:

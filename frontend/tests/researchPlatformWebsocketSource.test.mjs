@@ -10,8 +10,10 @@ test('websocket exposes research_platform channel helpers and event dispatch', a
   assert.match(source, /session_updated/);
   assert.match(source, /session_running/);
   assert.match(source, /session_failed/);
+  assert.match(source, /session_deleted/);
   assert.match(source, /second_flushed/);
   assert.match(source, /session_quality_updated/);
+  assert.match(source, /dataset_manifest_deleted/);
   assert.match(source, /training_run_updated/);
 });
 

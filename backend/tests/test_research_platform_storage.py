@@ -152,6 +152,17 @@ def test_storage_round_trips_target_census_observation_source_kind(storage):
     assert row['observation_source_kind'] == 'independent_census_runtime_v1'
 
 
+def test_storage_target_census_schema_defaults_to_independent_runtime(storage):
+    with storage._get_cursor() as cursor:
+        cursor.execute("PRAGMA table_info(research_target_census_15m)")
+        columns = {
+            row['name']: row['dflt_value']
+            for row in cursor.fetchall()
+        }
+
+    assert columns['observation_source_kind'] == "'independent_census_runtime_v1'"
+
+
 def test_storage_round_trips_research_artifacts(storage):
     storage.save_research_artifact(
         artifact_ref='artifact://dataset/dataset-1/strata-fit-by-origin.json',

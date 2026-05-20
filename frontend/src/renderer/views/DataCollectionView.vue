@@ -9,7 +9,7 @@
     <ResearchCollectionControlCard
       :active-session="activeSession"
       :action-pending="sessionActionPending"
-      :action-error="sessionActionError"
+      :action-error="displaySessionError"
       :census-status="censusStatus"
       @start-collection-session="startCollectionSession"
       @stop-collection-session="stopCollectionSession"
@@ -24,7 +24,7 @@
     <ResearchSessionDetail
       :session="activeSession"
       :action-pending="sessionActionPending"
-      :action-error="sessionActionError"
+      :action-error="displaySessionError"
       @delete-collection-session="requestDeleteCollectionSession"
     />
     <ResearchSessionQualityCards :coverage="sessionCoverage" />
@@ -34,7 +34,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
 
 import ResearchCollectionControlCard from '../components/analytics/ResearchCollectionControlCard.vue';
 import ResearchCollectionProgressBoard from '../components/analytics/ResearchCollectionProgressBoard.vue';
@@ -65,9 +65,14 @@ const {
   sessionCoverage,
   sessionProgress,
   sessions,
+  realtimeError,
   startCollectionSession,
   stopCollectionSession,
 } = useDataCollectionWorkspace();
+
+const displaySessionError = computed(() => {
+  return realtimeError.value || sessionActionError.value;
+});
 
 watch(selectedSessionId, (sessionId) => {
   void loadSessionDetail(sessionId);

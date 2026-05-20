@@ -17,7 +17,7 @@
         :selected-dataset-manifest="selectedDatasetManifest"
         :selected-dataset-preview="selectedDatasetPreview"
         :dataset-action-pending="datasetActionPending"
-        :dataset-action-error="datasetActionError"
+        :dataset-action-error="datasetDisplayError"
         :dataset-create-pending="datasetCreatePending"
         :dataset-create-error="datasetCreateError"
         @update:selected-session-ids="selectedSessionIds = $event"
@@ -30,7 +30,7 @@
         v-else-if="activePage === 'model-training'"
         :datasets="datasets"
         :training-action-pending="trainingActionPending"
-        :training-action-error="trainingActionError"
+        :training-action-error="trainingDisplayError"
         :training-runs="trainingRuns"
         :selected-dataset-id="selectedDatasetId"
         :selected-dataset-manifest="selectedDatasetManifest"
@@ -53,7 +53,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import DatasetBuildingPage from './DatasetBuildingPage.vue';
 import ModelTrainingPage from './ModelTrainingPage.vue';
@@ -94,7 +94,16 @@ const {
   trainingActionError,
   trainingActionPending,
   trainingRuns,
+  realtimeError,
 } = useResearchTrainingWorkspace();
+
+const datasetDisplayError = computed(() => {
+  return realtimeError.value || datasetActionError.value;
+});
+
+const trainingDisplayError = computed(() => {
+  return realtimeError.value || trainingActionError.value;
+});
 
 watch(selectedDatasetId, (datasetId) => {
   void loadDatasetDetail(datasetId);

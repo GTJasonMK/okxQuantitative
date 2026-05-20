@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.deps import require_sensitive_write_access
 from app.core.app_context import AppContext, get_app_context
+from app.core.data_center_collection.errors import CollectionSessionBootstrapError
 from app.core.research_platform_delete_errors import DatasetDeleteBlockedError
 
 
@@ -66,8 +68,17 @@ class TrainingRunCreateRequest(BaseModel):
 
 
 @router.post('/sessions')
-async def start_session(request: ResearchSessionCreateRequest, ctx: AppContext = Depends(get_app_context)):
-    session = await ctx.research_platform().start_collection_session(request.model_dump())
+async def start_session(
+    request: ResearchSessionCreateRequest,
+    ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
+):
+    try:
+        session = await ctx.research_platform().start_collection_session(request.model_dump())
+    except CollectionSessionBootstrapError as exc:
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {'session': session}
 
 
@@ -85,7 +96,11 @@ async def get_session(session_id: str, ctx: AppContext = Depends(get_app_context
 
 
 @router.post('/sessions/{session_id}/stop')
-async def stop_session(session_id: str, ctx: AppContext = Depends(get_app_context)):
+async def stop_session(
+    session_id: str,
+    ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
+):
     session = await ctx.research_platform().stop_collection_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail='research session not found')
@@ -98,7 +113,11 @@ async def get_census_status(ctx: AppContext = Depends(get_app_context)):
 
 
 @router.post('/datasets')
-async def create_dataset(request: DatasetCreateRequest, ctx: AppContext = Depends(get_app_context)):
+async def create_dataset(
+    request: DatasetCreateRequest,
+    ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
+):
     try:
         dataset = ctx.research_platform().create_dataset_manifest(request.model_dump())
     except ValueError as exc:
@@ -120,7 +139,11 @@ async def get_dataset(dataset_id: str, ctx: AppContext = Depends(get_app_context
 
 
 @router.delete('/datasets/{dataset_id}')
-async def delete_dataset(dataset_id: str, ctx: AppContext = Depends(get_app_context)):
+async def delete_dataset(
+    dataset_id: str,
+    ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
+):
     try:
         deleted = ctx.research_platform().delete_dataset_manifest(dataset_id)
     except DatasetDeleteBlockedError as exc:
@@ -156,7 +179,11 @@ async def get_dataset_preview(dataset_id: str, ctx: AppContext = Depends(get_app
 
 
 @router.post('/training-runs')
-async def start_training_run(request: TrainingRunCreateRequest, ctx: AppContext = Depends(get_app_context)):
+async def start_training_run(
+    request: TrainingRunCreateRequest,
+    ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
+):
     try:
         run = ctx.research_platform().start_training_run(request.model_dump())
     except ValueError as exc:

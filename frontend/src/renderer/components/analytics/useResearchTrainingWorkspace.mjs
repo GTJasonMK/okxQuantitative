@@ -2,6 +2,7 @@ import { computed, ref } from 'vue';
 
 import { api } from '../../services/api.js';
 import { formatApiErrorDetail } from '../../utils/apiErrorDetail.mjs';
+import { bindRealtimeConnection } from '../../utils/realtimeConnection.mjs';
 import marketWS from '../../services/websocket.js';
 import {
   buildDatasetCreatePayload,
@@ -30,6 +31,14 @@ export function useResearchTrainingWorkspace(deps = {}) {
   const datasetCreateError = ref('');
   const trainingActionPending = ref(false);
   const trainingActionError = ref('');
+  const realtimeError = ref('');
+
+  const { attachRealtimeConnection, detachRealtimeConnection } = bindRealtimeConnection({
+    realtime,
+    errorRef: realtimeError,
+    connectMessage: '研究平台实时连接失败',
+    disconnectMessage: '研究平台实时连接已断开',
+  });
 
   const selectedSplitArtifact = computed(() => selectedRunArtifacts.value?.split_artifact || null);
   const selectedRegimeSchema = computed(() => selectedDatasetPreview.value?.regime_schema || null);
@@ -159,11 +168,12 @@ export function useResearchTrainingWorkspace(deps = {}) {
   };
 
   const attachRealtime = () => {
-    realtime.connect().catch(() => {});
+    attachRealtimeConnection();
     realtime.subscribeResearchPlatform(handleResearchPlatformEvent);
   };
 
   const detachRealtime = () => {
+    detachRealtimeConnection();
     realtime.unsubscribeResearchPlatform(handleResearchPlatformEvent);
   };
 
@@ -219,6 +229,7 @@ export function useResearchTrainingWorkspace(deps = {}) {
     datasetCreateError,
     trainingActionPending,
     trainingActionError,
+    realtimeError,
     loadCollectionSessions,
     loadDatasets,
     loadDatasetDetail,

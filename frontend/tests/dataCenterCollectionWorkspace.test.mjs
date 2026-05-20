@@ -11,6 +11,7 @@ test('useDataCollectionWorkspace exposes collection actions and progress state',
   assert.ok('sessionCoverage' in workspace);
   assert.ok('sessionProgress' in workspace);
   assert.ok('censusStatus' in workspace);
+  assert.ok('realtimeError' in workspace);
   assert.equal(typeof workspace.startCollectionSession, 'function');
   assert.equal(typeof workspace.stopCollectionSession, 'function');
   assert.equal(typeof workspace.handleCollectionEvent, 'function');
@@ -172,6 +173,30 @@ test('workspace stores api detail when collection session start fails', async ()
 
   assert.equal(workspace.sessionActionPending.value, false);
   assert.equal(workspace.sessionActionError.value, 'market feed unavailable');
+});
+
+test('workspace exposes realtime connection errors to UI state', async () => {
+  const workspace = useDataCollectionWorkspace({
+    api: {
+      async getDataCenterCollectionSessions() {
+        return { sessions: [] };
+      },
+    },
+    realtime: {
+      async connect() {
+        throw new Error('ws handshake failed');
+      },
+      subscribeDataCenterCollection() {},
+      unsubscribeDataCenterCollection() {},
+      addConnectionListener() {},
+      removeConnectionListener() {},
+    },
+  });
+
+  workspace.attachRealtime();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(workspace.realtimeError.value, 'ws handshake failed');
 });
 
 test('workspace deletes selected collection session and clears stale detail', async () => {

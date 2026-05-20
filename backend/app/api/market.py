@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from ..agent.queries import AgentQueryService
 from ..agent.schemas import AgentDataHealthQueryRequest
 
-from ..utils.datetimes import parse_iso_datetime
 from ..models.schemas import (
     CandleModel,
     CandleListResponse,
@@ -35,7 +34,6 @@ from ..models.schemas import (
     DataResponse,
     TimeframeEnum,
     InstTypeEnum,
-    SyncModeEnum,
 )
 from ..core import (
     DataStorage,
@@ -45,22 +43,29 @@ from ..core import (
     CachedDataFetcher,
 )
 from ..core.app_context import AppContext
-from ..core.data_guardian import (
-    DEFAULT_TIMEFRAME_PLANS,
-    get_data_guardian,
-    normalize_guardian_settings,
-)
+from ..core.data_guardian import get_data_guardian, normalize_guardian_settings
 from ..core.market_sync_tasks import get_market_sync_task_manager
 from ..core.price_alerts import price_alert_store
-from .deps import get_ctx
 from ..utils.timeframes import calculate_candle_count
 from ..utils.watched_symbols_store import (
     add_watched_symbol,
     get_watched_symbol,
     load_watched_symbols,
     normalize_watched_symbol,
-    remove_watched_symbol,
-    save_watched_symbols,
+)
+from .deps import get_ctx
+from .market_helpers import (
+    _build_inventory_response,
+    _build_sync_runner,
+    _cancel_related_sync_jobs,
+    _delete_symbol_inventory_records,
+    _execute_sync,
+    _has_remote_market_fetcher,
+    _raise_watchlist_create_rollback,
+    _request_guardian_run_now_safely,
+    _require_remote_market_fetcher,
+    _resolve_inst_type_value,
+    _start_watchlist_sync_jobs,
 )
 
 
@@ -122,231 +127,6 @@ class DataGuardianConfigRequest(BaseModel):
     plans: List[DataGuardianPlanConfigRequest] = Field(default_factory=list, description="周期归档策略")
 
 
-def _build_full_sync_runner(
-    manager: CachedDataManager,
-    *,
-    inst_id: str,
-    timeframe: str,
-    days: int,
-    inst_type: str,
-):
-    return lambda progress_callback: manager.sync_candles_full(
-        inst_id,
-        timeframe,
-        days,
-        inst_type,
-        progress_callback=progress_callback,
-    )
-
-
-def _build_window_sync_runner(
-    manager: CachedDataManager,
-    *,
-    inst_id: str,
-    timeframe: str,
-    days: int,
-    inst_type: str,
-):
-    return lambda progress_callback: manager.sync_candles_window(
-        inst_id,
-        timeframe,
-        days,
-        inst_type,
-        progress_callback=progress_callback,
-    )
-
-
-def _resolve_watch_sync_plans() -> List[Dict[str, Any]]:
-    guardian = get_data_guardian()
-    settings = guardian.get_settings()
-    plans = settings.get("plans") if isinstance(settings, dict) else None
-    if not isinstance(plans, list) or not plans:
-        plans = DEFAULT_TIMEFRAME_PLANS
-
-    normalized_plans: List[Dict[str, Any]] = []
-    for plan in plans:
-        if not isinstance(plan, dict):
-            continue
-        timeframe = str(plan.get("timeframe") or "").strip()
-        if not timeframe:
-            continue
-        if not bool(plan.get("enabled", True)):
-            continue
-        archive_mode = str(plan.get("archive_mode") or "rolling").strip().lower()
-        if archive_mode not in {"rolling", "full"}:
-            archive_mode = "rolling"
-        normalized_plans.append({
-            "timeframe": timeframe,
-            "bootstrap_days": max(int(plan.get("bootstrap_days", 30) or 30), 1),
-            "archive_mode": archive_mode,
-        })
-    return normalized_plans
-
-
-def _start_watchlist_sync_jobs(
-    manager: CachedDataManager,
-    watched_symbol: Dict[str, Any],
-    *,
-    sync_spot: bool,
-    sync_swap: bool,
-) -> List[Dict[str, Any]]:
-    task_manager = get_market_sync_task_manager()
-    sync_jobs: List[Dict[str, Any]] = []
-    sync_targets = []
-
-    if sync_spot:
-        sync_targets.append(("SPOT", watched_symbol.get("spot_inst_id") or watched_symbol["symbol"]))
-    if sync_swap:
-        sync_targets.append(("SWAP", watched_symbol.get("swap_inst_id") or f"{watched_symbol['symbol']}-SWAP"))
-
-    plans = _resolve_watch_sync_plans()
-    if not plans:
-        return []
-
-    for inst_type, inst_id in sync_targets:
-        for plan in plans:
-            sync_mode = "full" if plan.get("archive_mode") == "full" else "window"
-            sync_jobs.append(
-                task_manager.start_job(
-                    inst_id=inst_id,
-                    inst_type=inst_type,
-                    timeframe=plan["timeframe"],
-                    mode=sync_mode,
-                    days=plan["bootstrap_days"],
-                    runner=(
-                        _build_full_sync_runner(
-                            manager,
-                            inst_id=inst_id,
-                            timeframe=plan["timeframe"],
-                            days=plan["bootstrap_days"],
-                            inst_type=inst_type,
-                        )
-                        if sync_mode == "full"
-                        else _build_window_sync_runner(
-                            manager,
-                            inst_id=inst_id,
-                            timeframe=plan["timeframe"],
-                            days=plan["bootstrap_days"],
-                            inst_type=inst_type,
-                        )
-                    ),
-                )
-            )
-    return sync_jobs
-
-
-def _resolve_related_inst_ids(symbol: str) -> List[str]:
-    normalized_symbol = normalize_watched_symbol(symbol)
-    if not normalized_symbol:
-        return []
-    return [normalized_symbol, f"{normalized_symbol}-SWAP"]
-
-
-def _resolve_inst_type_value(inst_id: str, inst_type: Optional[InstTypeEnum]) -> str:
-    if inst_type is not None:
-        return inst_type.value
-    return "SWAP" if str(inst_id or "").upper().endswith("-SWAP") else "SPOT"
-
-
-def _request_guardian_run_now_safely(source: str) -> None:
-    try:
-        guardian = get_data_guardian()
-        guardian.request_run_now()
-    except Exception as exc:
-        print(f"[market] guardian.request_run_now 失败({source}): {exc}")
-
-
-def _has_remote_market_fetcher(fetcher: Optional[CachedDataFetcher]) -> bool:
-    """判断是否具备可用的远端行情抓取器。"""
-    if not fetcher:
-        return False
-    if hasattr(fetcher, "fetcher"):
-        return getattr(fetcher, "fetcher") is not None
-    return True
-
-
-def _restore_watched_symbols_snapshot(records: List[Dict[str, Any]]) -> None:
-    if not save_watched_symbols(records):
-        raise RuntimeError("恢复关注币种快照失败")
-
-
-def _cancel_related_sync_jobs(symbol: str, *, reason: str) -> List[Dict[str, Any]]:
-    inst_ids = _resolve_related_inst_ids(symbol)
-    if not inst_ids:
-        return []
-    task_manager = get_market_sync_task_manager()
-    return task_manager.cancel_jobs(inst_ids=inst_ids, reason=reason)
-
-
-def _list_related_active_jobs(symbol: str) -> List[Dict[str, Any]]:
-    related_inst_ids = set(_resolve_related_inst_ids(symbol))
-    if not related_inst_ids:
-        return []
-
-    task_manager = get_market_sync_task_manager()
-    jobs = task_manager.list_jobs(only_active=True, limit=200)
-    return [job for job in jobs if job.get("inst_id") in related_inst_ids]
-
-
-def _build_inventory_response(storage: DataStorage) -> Dict[str, Any]:
-    watched_items = load_watched_symbols()
-    watched_symbols = {item["symbol"] for item in watched_items}
-    rows = storage.get_symbol_data_inventory()
-
-    table_totals = {
-        "candles": 0,
-        "sync_records": 0,
-        "market_ticker_snapshots": 0,
-        "market_recent_trades": 0,
-        "local_fills": 0,
-        "live_order_records": 0,
-        "backtest_results": 0,
-        "cost_basis": 0,
-        "total": 0,
-    }
-    total_candles = 0
-    total_timeframe_records = 0
-    orphan_count = 0
-    covered_watched_count = 0
-
-    normalized_rows: List[Dict[str, Any]] = []
-    for row in rows:
-        symbol = normalize_watched_symbol(row.get("symbol"))
-        watched = symbol in watched_symbols
-        orphan = not watched
-        if watched:
-            covered_watched_count += 1
-        if orphan:
-            orphan_count += 1
-
-        storage_counts = dict(row.get("storage_counts") or {})
-        for key in table_totals:
-            table_totals[key] += int(storage_counts.get(key, 0) or 0)
-
-        total_candles += int(row.get("candle_count", 0) or 0)
-        total_timeframe_records += int(row.get("timeframe_record_count", 0) or 0)
-
-        normalized_rows.append({
-            **row,
-            "symbol": symbol,
-            "watched": watched,
-            "orphan": orphan,
-        })
-
-    return {
-        "summary": {
-            "symbol_count": len(normalized_rows),
-            "watched_symbol_count": covered_watched_count,
-            "watched_list_count": len(watched_symbols),
-            "orphan_symbol_count": orphan_count,
-            "total_candles": total_candles,
-            "total_timeframe_records": total_timeframe_records,
-            "table_totals": table_totals,
-        },
-        "rows": normalized_rows,
-    }
-
-
 # ==================== 依赖注入（使用单例缓存） ====================
 
 
@@ -359,13 +139,16 @@ def get_storage(ctx: AppContext = Depends(get_ctx)) -> DataStorage:
         raise HTTPException(status_code=503, detail=f"存储服务初始化失败: {str(e)}")
 
 
-def get_fetcher(ctx: AppContext = Depends(get_ctx)) -> Optional[CachedDataFetcher]:
+def get_fetcher(ctx: AppContext = Depends(get_ctx)) -> CachedDataFetcher:
     """获取数据获取器实例（单例）"""
     try:
-        return ctx.fetcher()
+        fetcher = ctx.fetcher()
     except Exception as e:
         print(f"[依赖注入] 获取数据获取器失败: {e}")
-        return None
+        raise HTTPException(status_code=503, detail=f"行情抓取器初始化失败: {str(e)}")
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器初始化失败")
+    return fetcher
 
 
 def get_manager(ctx: AppContext = Depends(get_ctx)) -> CachedDataManager:
@@ -389,7 +172,7 @@ async def get_ticker(
     inst_id: str,
     inst_type: Optional[InstTypeEnum] = Query(default=None, description="交易类型，不传时按交易对自动推断"),
     fresh: bool = Query(default=False, description="是否绕过本地缓存，直接获取最新行情"),
-    fetcher: Optional[CachedDataFetcher] = Depends(get_fetcher),
+    fetcher: CachedDataFetcher = Depends(get_fetcher),
     storage: DataStorage = Depends(get_storage),
 ):
     """
@@ -398,63 +181,47 @@ async def get_ticker(
     - **inst_id**: 交易对，如 BTC-USDT
     """
     resolved_inst_type = _resolve_inst_type_value(inst_id, inst_type)
-    ticker = None
-    fetch_error = None
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器不可用")
 
-    if fetcher and fresh:
+    if fresh:
+        market_fetcher = _require_remote_market_fetcher(fetcher)
         try:
-            direct_fetcher = getattr(fetcher, "fetcher", None)
+            direct_fetcher = getattr(market_fetcher, "fetcher", None)
             if direct_fetcher is None:
                 raise RuntimeError("行情抓取器不可用")
             ticker = await asyncio.to_thread(
                 direct_fetcher.get_ticker,
                 inst_id,
             )
-            if ticker:
-                await asyncio.to_thread(
-                    storage.save_ticker_snapshot,
-                    ticker,
-                    resolved_inst_type,
-                    "rest",
-                )
-                await asyncio.to_thread(
-                    fetcher.prime_ticker_cache,
-                    ticker,
-                    inst_type=resolved_inst_type,
-                )
         except Exception as exc:
-            fetch_error = exc
             print(f"[market] get_ticker 实时获取失败 {inst_id}: {exc}")
-
-    if fetcher and not ticker:
+            raise HTTPException(status_code=503, detail=f"获取行情失败: {str(exc)}") from exc
+        if not ticker:
+            raise HTTPException(status_code=404, detail=f"未找到交易对 {inst_id}")
+        await asyncio.to_thread(
+            storage.save_ticker_snapshot,
+            ticker,
+            resolved_inst_type,
+            "rest",
+        )
+        await asyncio.to_thread(
+            fetcher.prime_ticker_cache,
+            ticker,
+            inst_type=resolved_inst_type,
+        )
+    else:
         try:
             ticker = await asyncio.to_thread(
-                fetcher.get_ticker_cached,
+                fetcher.get_ticker_strict,
                 inst_id,
                 resolved_inst_type,
             )
         except Exception as exc:
-            fetch_error = exc
-            print(f"[market] get_ticker 缓存获取失败 {inst_id}: {exc}")
-
-    if not ticker:
-        try:
-            ticker = await asyncio.to_thread(
-                storage.get_latest_ticker,
-                inst_id,
-                inst_type=resolved_inst_type,
-            )
-        except Exception as exc:
-            if fetch_error is None:
-                fetch_error = exc
-            print(f"[market] get_ticker 本地回退失败 {inst_id}: {exc}")
-
-    if not ticker:
-        if fetch_error:
-            raise HTTPException(status_code=503, detail=f"获取行情失败: {str(fetch_error)}")
-        if not _has_remote_market_fetcher(fetcher):
-            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用行情缓存")
-        raise HTTPException(status_code=404, detail=f"未找到交易对 {inst_id}，可能是API未配置或网络问题")
+            print(f"[market] get_ticker 获取失败 {inst_id}: {exc}")
+            raise HTTPException(status_code=503, detail=f"获取行情失败: {str(exc)}") from exc
+        if not ticker:
+            raise HTTPException(status_code=404, detail=f"未找到交易对 {inst_id}")
 
     return TickerResponse(
         data=TickerModel(
@@ -476,7 +243,7 @@ async def get_ticker(
 @router.get("/tickers", response_model=TickerListResponse, summary="获取所有行情")
 async def get_tickers(
     inst_type: InstTypeEnum = Query(default=InstTypeEnum.SPOT, description="交易类型"),
-    fetcher: Optional[CachedDataFetcher] = Depends(get_fetcher),
+    fetcher: CachedDataFetcher = Depends(get_fetcher),
     storage: DataStorage = Depends(get_storage),
 ):
     """
@@ -484,33 +251,14 @@ async def get_tickers(
 
     - **inst_type**: 交易类型 (SPOT/SWAP/FUTURES/OPTION)
     """
-    tickers: Dict[str, Any] = {}
-    fetch_error = None
-
-    if fetcher:
-        try:
-            tickers = await asyncio.to_thread(fetcher.get_tickers_cached, inst_type.value)
-        except Exception as exc:
-            fetch_error = exc
-            print(f"[market] get_tickers 缓存获取失败 {inst_type.value}: {exc}")
-
-    if not tickers:
-        try:
-            local_tickers = await asyncio.to_thread(
-                storage.get_latest_tickers,
-                inst_type=inst_type.value,
-            )
-            tickers = {ticker.inst_id: ticker for ticker in local_tickers}
-        except Exception as exc:
-            if fetch_error is None:
-                fetch_error = exc
-            print(f"[market] get_tickers 本地回退失败 {inst_type.value}: {exc}")
-
-    if not tickers:
-        if fetch_error:
-            raise HTTPException(status_code=503, detail=f"获取行情列表失败: {str(fetch_error)}")
-        if not _has_remote_market_fetcher(fetcher):
-            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用行情缓存")
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器不可用")
+    del storage
+    try:
+        tickers = await asyncio.to_thread(fetcher.get_tickers_strict, inst_type.value)
+    except Exception as exc:
+        print(f"[market] get_tickers 获取失败 {inst_type.value}: {exc}")
+        raise HTTPException(status_code=503, detail=f"获取行情列表失败: {str(exc)}") from exc
 
     return TickerListResponse(
         data=[
@@ -537,7 +285,7 @@ async def get_recent_trades(
     inst_id: str,
     limit: int = Query(default=30, ge=1, le=100, description="返回数量"),
     inst_type: Optional[InstTypeEnum] = Query(default=None, description="交易类型，不传时按交易对自动推断"),
-    fetcher: Optional[CachedDataFetcher] = Depends(get_fetcher),
+    fetcher: CachedDataFetcher = Depends(get_fetcher),
     storage: DataStorage = Depends(get_storage),
 ):
     """
@@ -547,39 +295,19 @@ async def get_recent_trades(
     - **limit**: 返回数量，最大 100
     """
     resolved_inst_type = _resolve_inst_type_value(inst_id, inst_type)
-    trades = []
-    fetch_error = None
-
-    if fetcher:
-        try:
-            trades = await asyncio.to_thread(
-                fetcher.get_recent_trades_local_first,
-                inst_id,
-                limit,
-                inst_type=resolved_inst_type,
-            )
-        except Exception as exc:
-            fetch_error = exc
-            print(f"[market] get_recent_trades 缓存获取失败 {inst_id}: {exc}")
-
-    if not trades:
-        try:
-            trades = await asyncio.to_thread(
-                storage.get_recent_trades,
-                inst_id,
-                limit=limit,
-                inst_type=resolved_inst_type,
-            )
-        except Exception as exc:
-            if fetch_error is None:
-                fetch_error = exc
-            print(f"[market] get_recent_trades 本地回退失败 {inst_id}: {exc}")
-
-    if not trades:
-        if fetch_error:
-            raise HTTPException(status_code=503, detail=f"获取逐笔成交失败: {str(fetch_error)}")
-        if not _has_remote_market_fetcher(fetcher):
-            raise HTTPException(status_code=503, detail="行情抓取器不可用，且本地无可用逐笔缓存")
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器不可用")
+    del storage
+    try:
+        trades = await asyncio.to_thread(
+            fetcher.get_recent_trades_strict,
+            inst_id,
+            limit,
+            inst_type=resolved_inst_type,
+        )
+    except Exception as exc:
+        print(f"[market] get_recent_trades 获取失败 {inst_id}: {exc}")
+        raise HTTPException(status_code=503, detail=f"获取逐笔成交失败: {str(exc)}") from exc
 
     return DataResponse(data=[trade.to_dict() for trade in trades])
 
@@ -588,7 +316,7 @@ async def get_recent_trades(
 async def get_orderbook(
     inst_id: str,
     size: int = Query(default=20, ge=1, le=500, description="返回档位数量"),
-    fetcher: Optional[CachedDataFetcher] = Depends(get_fetcher),
+    fetcher: CachedDataFetcher = Depends(get_fetcher),
 ):
     """
     获取交易对盘口深度。
@@ -596,11 +324,14 @@ async def get_orderbook(
     - **inst_id**: 交易对，如 BTC-USDT 或 BTC-USDT-SWAP
     - **size**: 返回档位数量，最大 500；超过 400 时后端会自动切到 books-full，失败时降级到 400 档
     """
-    if not fetcher:
-        raise HTTPException(status_code=503, detail="数据获取器不可用，无法获取盘口深度")
-
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器不可用")
     try:
-        orderbook = await asyncio.to_thread(fetcher.get_orderbook, inst_id, size)
+        orderbook = await asyncio.to_thread(
+            _require_remote_market_fetcher(fetcher).get_orderbook,
+            inst_id,
+            size,
+        )
     except Exception as exc:
         print(f"[market] get_orderbook 获取失败 {inst_id}: {exc}")
         raise HTTPException(status_code=503, detail=f"获取盘口深度失败: {str(exc)}") from exc
@@ -767,35 +498,19 @@ async def sync_candles(
       - incremental: 仅补本地最新 K 线之后的缺口
       - full: 向过去分页回补到最早可获取历史，并补齐最新缺口
     """
-    if not manager.fetcher:
+    if not _has_remote_market_fetcher(manager.fetcher):
         raise HTTPException(status_code=503, detail="交易所数据服务不可用")
 
     try:
-        # 使用 asyncio.to_thread 避免阻塞事件循环（同步操作包含网络请求和 time.sleep）
-        if request.mode == SyncModeEnum.FULL:
-            result = await asyncio.to_thread(
-                manager.sync_candles_full,
-                request.inst_id,
-                request.timeframe.value,
-                request.days,
-                request.inst_type.value,
-            )
-        elif request.mode == SyncModeEnum.INCREMENTAL:
-            result = await asyncio.to_thread(
-                manager.sync_candles_incremental,
-                request.inst_id,
-                request.timeframe.value,
-                request.days,
-                request.inst_type.value,
-            )
-        else:
-            result = await asyncio.to_thread(
-                manager.sync_candles_window,
-                request.inst_id,
-                request.timeframe.value,
-                request.days,
-                request.inst_type.value,
-            )
+        result = await asyncio.to_thread(
+            _execute_sync,
+            manager,
+            inst_id=request.inst_id,
+            timeframe=request.timeframe.value,
+            days=request.days,
+            inst_type=request.inst_type.value,
+            mode=request.mode.value,
+        )
         return DataResponse(data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"同步失败: {str(e)}")
@@ -807,35 +522,10 @@ async def start_sync_job(
     manager: CachedDataManager = Depends(get_manager),
 ):
     """启动后台同步任务，立即返回 task_id，适合全量回补等长任务。"""
-    if not manager.fetcher:
+    if not _has_remote_market_fetcher(manager.fetcher):
         raise HTTPException(status_code=503, detail="交易所数据服务不可用")
 
     task_manager = get_market_sync_task_manager()
-
-    def _build_runner():
-        if request.mode == SyncModeEnum.FULL:
-            return lambda progress_callback: manager.sync_candles_full(
-                request.inst_id,
-                request.timeframe.value,
-                request.days,
-                request.inst_type.value,
-                progress_callback=progress_callback,
-            )
-        if request.mode == SyncModeEnum.INCREMENTAL:
-            return lambda progress_callback: manager.sync_candles_incremental(
-                request.inst_id,
-                request.timeframe.value,
-                request.days,
-                request.inst_type.value,
-                progress_callback=progress_callback,
-            )
-        return lambda progress_callback: manager.sync_candles_window(
-            request.inst_id,
-            request.timeframe.value,
-            request.days,
-            request.inst_type.value,
-            progress_callback=progress_callback,
-        )
 
     try:
         job_data = task_manager.start_job(
@@ -844,7 +534,14 @@ async def start_sync_job(
             timeframe=request.timeframe.value,
             mode=request.mode.value,
             days=request.days,
-            runner=_build_runner(),
+            runner=_build_sync_runner(
+                manager,
+                inst_id=request.inst_id,
+                timeframe=request.timeframe.value,
+                days=request.days,
+                inst_type=request.inst_type.value,
+                mode=request.mode.value,
+            ),
         )
         return SyncJobStatusResponse(data=job_data)
     except Exception as e:
@@ -931,18 +628,20 @@ async def trigger_data_guardian_scan():
 @router.get("/instruments", response_model=InstrumentListResponse, summary="获取交易产品列表")
 async def get_instruments(
     inst_type: InstTypeEnum = Query(default=InstTypeEnum.SPOT, description="交易类型"),
-    fetcher: Optional[CachedDataFetcher] = Depends(get_fetcher)
+    fetcher: CachedDataFetcher = Depends(get_fetcher)
 ):
     """
     获取交易所支持的交易产品列表
 
     - **inst_type**: 交易类型
     """
-    if not fetcher:
-        raise HTTPException(status_code=503, detail="数据服务不可用")
-
+    if fetcher is None:
+        raise HTTPException(status_code=503, detail="行情抓取器不可用")
     # 使用 asyncio.to_thread 避免阻塞事件循环
-    instruments = await asyncio.to_thread(fetcher.get_instruments, InstType(inst_type.value))
+    instruments = await asyncio.to_thread(
+        _require_remote_market_fetcher(fetcher).get_instruments,
+        InstType(inst_type.value),
+    )
     return InstrumentListResponse(data=instruments)
 
 
@@ -976,6 +675,7 @@ async def create_watched_symbol(
     if not request.sync_spot and not request.sync_swap:
         raise HTTPException(status_code=400, detail="至少需要选择一种同步目标（现货或永续）")
 
+    watched_snapshot = await asyncio.to_thread(load_watched_symbols)
     existing = await asyncio.to_thread(get_watched_symbol, normalized_symbol)
     existing_sync_spot = bool(existing.get("sync_spot", True)) if existing else False
     existing_sync_swap = bool(existing.get("sync_swap", True)) if existing else False
@@ -998,8 +698,6 @@ async def create_watched_symbol(
         await asyncio.to_thread(manager_storage.unblock_symbol_writes, normalized_symbol)
 
     sync_jobs: List[Dict[str, Any]] = []
-    sync_deferred = False
-    sync_message = ""
     sync_spot = request.sync_spot if not existed else (request.sync_spot and not existing_sync_spot)
     sync_swap = request.sync_swap if not existed else (request.sync_swap and not existing_sync_swap)
 
@@ -1010,30 +708,43 @@ async def create_watched_symbol(
                 watched_symbol=WatchedSymbolModel.model_validate(watched_symbol),
                 existed=True,
                 sync_jobs=[],
-                sync_deferred=False,
-                sync_message="",
             )
         )
 
-    if not manager.fetcher:
-        sync_deferred = True
-        sync_message = "交易所连接当前不可用，已加入关注列表；待连接恢复后会由后台守护器自动同步。"
-    else:
-        try:
-            sync_jobs = await asyncio.to_thread(
-                _start_watchlist_sync_jobs,
-                manager,
-                watched_symbol,
-                sync_spot=sync_spot,
-                sync_swap=sync_swap,
-            )
-            if (sync_spot or sync_swap) and not sync_jobs:
-                sync_deferred = True
-                sync_message = "当前数据守护器未启用任何周期，已加入关注列表；启用周期后会再启动同步。"
-        except Exception as exc:
-            sync_deferred = True
-            sync_message = f"已加入关注列表，但启动同步任务失败：{str(exc)}；后台守护器会在后续自动重试。"
-            print(f"[watchlist] 启动关注币同步任务失败: {normalized_symbol} -> {exc}")
+    if not _has_remote_market_fetcher(manager.fetcher):
+        _raise_watchlist_create_rollback(
+            snapshot=watched_snapshot,
+            symbol=normalized_symbol,
+            storage=manager_storage,
+            detail="交易所数据服务不可用，新增关注币种已回滚",
+            status_code=503,
+        )
+
+    try:
+        sync_jobs = await asyncio.to_thread(
+            _start_watchlist_sync_jobs,
+            manager,
+            watched_symbol,
+            sync_spot=sync_spot,
+            sync_swap=sync_swap,
+        )
+    except Exception as exc:
+        print(f"[watchlist] 启动关注币同步任务失败: {normalized_symbol} -> {exc}")
+        _raise_watchlist_create_rollback(
+            snapshot=watched_snapshot,
+            symbol=normalized_symbol,
+            storage=manager_storage,
+            detail=f"启动关注币同步任务失败，新增关注币种已回滚: {str(exc)}",
+            status_code=500,
+        )
+    if (sync_spot or sync_swap) and not sync_jobs:
+        _raise_watchlist_create_rollback(
+            snapshot=watched_snapshot,
+            symbol=normalized_symbol,
+            storage=manager_storage,
+            detail="当前数据守护器未启用任何周期，无法启动关注币同步任务，新增关注币种已回滚",
+            status_code=503,
+        )
 
     _request_guardian_run_now_safely("create_watched_symbol")
     return WatchedSymbolCreateResponse(
@@ -1041,8 +752,6 @@ async def create_watched_symbol(
             watched_symbol=WatchedSymbolModel.model_validate(watched_symbol),
             existed=existed,
             sync_jobs=sync_jobs,
-            sync_deferred=sync_deferred,
-            sync_message=sync_message,
         )
     )
 
@@ -1069,7 +778,7 @@ async def repair_watched_symbol(
     watched_record = await asyncio.to_thread(get_watched_symbol, normalized_symbol)
     if not watched_record:
         raise HTTPException(status_code=404, detail="关注币种不存在")
-    if not manager.fetcher:
+    if not _has_remote_market_fetcher(manager.fetcher):
         raise HTTPException(status_code=503, detail="交易所数据服务不可用")
 
     effective_sync_spot = bool(sync_spot and watched_record.get("sync_spot", True))
@@ -1117,47 +826,29 @@ async def delete_watched_symbol(
     if not normalized_symbol:
         raise HTTPException(status_code=400, detail="无效币种")
 
-    watched_snapshot = await asyncio.to_thread(load_watched_symbols)
     watched_record = await asyncio.to_thread(get_watched_symbol, normalized_symbol)
     if not watched_record:
         raise HTTPException(status_code=404, detail="关注币种不存在")
 
-    await asyncio.to_thread(storage.block_symbol_writes, normalized_symbol)
-    affected_jobs = await asyncio.to_thread(
-        _cancel_related_sync_jobs,
-        normalized_symbol,
-        reason="币种已从关注列表移除，后台同步任务已取消",
-    )
-
     try:
-        removed_record, removed = await asyncio.to_thread(remove_watched_symbol, normalized_symbol)
-        if not removed:
-            raise RuntimeError("删除关注币种失败")
+        result = await asyncio.to_thread(
+            _delete_symbol_inventory_records,
+            storage=storage,
+            symbol=normalized_symbol,
+            remove_watch=True,
+            cancel_reason="币种已从关注列表移除，后台同步任务已取消",
+            keep_blocked_on_success=True,
+        )
     except Exception as exc:
-        await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
-        raise HTTPException(status_code=500, detail=f"删除关注币种失败: {str(exc)}")
-
-    try:
-        deleted_counts = await asyncio.to_thread(storage.delete_symbol_related_data, normalized_symbol)
-    except Exception as exc:
-        rollback_error = None
-        try:
-            await asyncio.to_thread(_restore_watched_symbols_snapshot, watched_snapshot)
-            await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
-        except Exception as rollback_exc:
-            rollback_error = rollback_exc
-        detail = f"清理本地数据失败，已回滚关注列表: {str(exc)}"
-        if rollback_error is not None:
-            detail = f"清理本地数据失败且回滚关注列表失败: {str(exc)}；回滚错误: {rollback_error}"
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=500, detail=f"删除关注币种失败: {str(exc)}") from exc
 
     _request_guardian_run_now_safely("delete_watched_symbol")
 
     payload = WatchedSymbolDeletePayload(
-        symbol=removed_record["symbol"] if removed_record else watched_record["symbol"],
+        symbol=result["symbol"] if result.get("symbol") else watched_record["symbol"],
         deleted=True,
-        deleted_counts=deleted_counts,
-        active_sync_jobs=affected_jobs,
+        deleted_counts=result["deleted_counts"],
+        active_sync_jobs=result["active_sync_jobs"],
     )
     return WatchedSymbolDeleteResponse(data=payload)
 
@@ -1204,48 +895,25 @@ async def delete_inventory_symbol(
     if watched_record and not remove_watch:
         raise HTTPException(status_code=409, detail="该币仍在关注列表中，请先删除关注，或传 remove_watch=true 一并移除")
 
-    watched_snapshot = await asyncio.to_thread(load_watched_symbols)
-    await asyncio.to_thread(storage.block_symbol_writes, normalized_symbol)
-    affected_jobs = await asyncio.to_thread(
-        _cancel_related_sync_jobs,
-        normalized_symbol,
-        reason="币种库存已删除，后台同步任务已取消",
-    )
-
-    removed_from_watch = False
-    if watched_record and remove_watch:
-        try:
-            removed_record, removed = await asyncio.to_thread(remove_watched_symbol, normalized_symbol)
-            if not removed:
-                raise RuntimeError("移除关注币种失败")
-            removed_from_watch = bool(removed_record)
-        except Exception as exc:
-            await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
-            raise HTTPException(status_code=500, detail=f"移除关注币种失败: {str(exc)}")
-
     try:
-        deleted_counts = await asyncio.to_thread(storage.delete_symbol_related_data, normalized_symbol)
+        result = await asyncio.to_thread(
+            _delete_symbol_inventory_records,
+            storage=storage,
+            symbol=normalized_symbol,
+            remove_watch=bool(watched_record and remove_watch),
+            cancel_reason="币种库存已删除，后台同步任务已取消",
+            keep_blocked_on_success=False,
+        )
     except Exception as exc:
-        rollback_error = None
-        if watched_record and remove_watch:
-            try:
-                await asyncio.to_thread(_restore_watched_symbols_snapshot, watched_snapshot)
-            except Exception as rollback_exc:
-                rollback_error = rollback_exc
-        await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
-        detail = f"删除本地库存失败: {str(exc)}"
-        if rollback_error is not None:
-            detail = f"删除本地库存失败且恢复关注列表失败: {str(exc)}；回滚错误: {rollback_error}"
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=500, detail=f"删除本地库存失败: {str(exc)}") from exc
 
-    await asyncio.to_thread(storage.unblock_symbol_writes, normalized_symbol)
     _request_guardian_run_now_safely("delete_inventory_symbol")
 
     return DataResponse(data={
-        "symbol": normalized_symbol,
-        "removed_from_watch": removed_from_watch,
-        "deleted_counts": deleted_counts,
-        "active_sync_jobs": affected_jobs,
+        "symbol": result["symbol"],
+        "removed_from_watch": result["removed_from_watch"],
+        "deleted_counts": result["deleted_counts"],
+        "active_sync_jobs": result["active_sync_jobs"],
     })
 
 

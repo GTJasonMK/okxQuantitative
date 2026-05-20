@@ -2,6 +2,7 @@ import { ref } from 'vue';
 
 import { api } from '../services/api.js';
 import { formatApiErrorDetail } from '../utils/apiErrorDetail.mjs';
+import { bindRealtimeConnection } from '../utils/realtimeConnection.mjs';
 import marketWS from '../services/websocket.js';
 
 const DEFAULT_CHARTS = Object.freeze({ price: [], trade: [], book: [] });
@@ -45,9 +46,17 @@ export function useDataCollectionWorkspace(deps = {}) {
   const censusStatus = ref(null);
   const sessionActionPending = ref(false);
   const sessionActionError = ref('');
+  const realtimeError = ref('');
+
+  const { attachRealtimeConnection, detachRealtimeConnection } = bindRealtimeConnection({
+    realtime,
+    errorRef: realtimeError,
+    connectMessage: '秒级采集实时连接失败',
+    disconnectMessage: '秒级采集实时连接已断开',
+  });
 
   const loadSessions = async () => {
-    const response = await callApi(apiClient, ['getDataCenterCollectionSessions', 'listDataCenterCollectionSessions'], [{ limit: 50 }]);
+    const response = await apiClient.getDataCenterCollectionSessions({ limit: 50 });
     sessions.value = response.sessions || [];
     selectedSessionId.value = resolveSelectedSessionId(selectedSessionId.value, sessions.value);
   };
@@ -57,7 +66,7 @@ export function useDataCollectionWorkspace(deps = {}) {
       resetSelectedSession(activeSession, sessionCharts, sessionCoverage, sessionProgress);
       return;
     }
-    const response = await callApi(apiClient, ['getDataCenterCollectionSessionDetail', 'getDataCenterCollectionSession'], [sessionId]);
+    const response = await apiClient.getDataCenterCollectionSessionDetail(sessionId);
     hydrateSessionDetail(
       response.session || null,
       activeSession,
@@ -69,7 +78,7 @@ export function useDataCollectionWorkspace(deps = {}) {
   };
 
   const loadCensusStatus = async () => {
-    const response = await callApi(apiClient, ['getDataCenterCollectionCensusStatus'], []);
+    const response = await apiClient.getDataCenterCollectionCensusStatus();
     censusStatus.value = response.status || null;
   };
 
@@ -77,7 +86,7 @@ export function useDataCollectionWorkspace(deps = {}) {
     sessionActionError.value = '';
     sessionActionPending.value = true;
     try {
-      const response = await callApi(apiClient, ['createDataCenterCollectionSession'], [payload]);
+      const response = await apiClient.createDataCenterCollectionSession(payload);
       const sessionId = response.session?.session_id || '';
       await loadSessions();
       if (sessionId) {
@@ -98,7 +107,7 @@ export function useDataCollectionWorkspace(deps = {}) {
     sessionActionError.value = '';
     sessionActionPending.value = true;
     try {
-      await callApi(apiClient, ['stopDataCenterCollectionSession'], [sessionId]);
+      await apiClient.stopDataCenterCollectionSession(sessionId);
       await loadSessions();
       await loadSessionDetail(sessionId);
     } catch (error) {
@@ -115,7 +124,7 @@ export function useDataCollectionWorkspace(deps = {}) {
     sessionActionError.value = '';
     sessionActionPending.value = true;
     try {
-      await callApi(apiClient, ['deleteDataCenterCollectionSession'], [sessionId]);
+      await apiClient.deleteDataCenterCollectionSession(sessionId);
       await loadSessions();
       pruneDeletedSessionState({
         sessionId,
@@ -166,11 +175,12 @@ export function useDataCollectionWorkspace(deps = {}) {
   };
 
   const attachRealtime = () => {
-    realtime.connect().catch(() => {});
+    attachRealtimeConnection();
     realtime.subscribeDataCenterCollection(handleCollectionEvent);
   };
 
   const detachRealtime = () => {
+    detachRealtimeConnection();
     realtime.unsubscribeDataCenterCollection(handleCollectionEvent);
   };
 
@@ -184,6 +194,7 @@ export function useDataCollectionWorkspace(deps = {}) {
     censusStatus,
     sessionActionPending,
     sessionActionError,
+    realtimeError,
     loadSessions,
     loadSessionDetail,
     loadCensusStatus,
@@ -194,15 +205,6 @@ export function useDataCollectionWorkspace(deps = {}) {
     attachRealtime,
     detachRealtime,
   };
-}
-
-function callApi(apiClient, names, args) {
-  for (const name of names) {
-    if (typeof apiClient[name] === 'function') {
-      return apiClient[name](...args);
-    }
-  }
-  throw new Error(`Missing data collection api method: ${names.join(', ')}`);
 }
 
 function hydrateSessionDetail(session, activeSession, sessionCharts, sessionCoverage, sessionProgress, sessions) {

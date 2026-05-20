@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.deps import require_sensitive_write_access
 from app.core.app_context import AppContext, get_app_context
 from app.core.data_center_collection.errors import CollectionSessionBootstrapError
 from app.core.research_platform_delete_errors import CollectionSessionDeleteBlockedError
@@ -47,6 +48,7 @@ async def get_collection_session(
 async def start_collection_session(
     request: DataCenterCollectionSessionCreateRequest,
     ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
 ):
     try:
         session = await ctx.research_platform().start_collection_session(request.model_dump())
@@ -61,6 +63,7 @@ async def start_collection_session(
 async def stop_collection_session(
     session_id: str,
     ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
 ):
     session = await ctx.research_platform().stop_collection_session(session_id)
     if session is None:
@@ -72,6 +75,7 @@ async def stop_collection_session(
 async def delete_collection_session(
     session_id: str,
     ctx: AppContext = Depends(get_app_context),
+    _guard: None = Depends(require_sensitive_write_access),
 ):
     try:
         deleted = await ctx.research_platform().delete_collection_session(session_id)

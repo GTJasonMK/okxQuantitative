@@ -7,10 +7,19 @@ from math import isfinite
 from .storage_research_platform_schema import (
     CENSUS_COLUMN_DEFS,
     CENSUS_COLUMNS,
+    CENSUS_TABLE_COLUMNS,
+    CENSUS_TABLE_CONSTRAINTS,
     CENSUS_SECOND_STATE_COLUMNS,
+    CENSUS_SECOND_STATE_TABLE_COLUMNS,
+    CENSUS_SECOND_STATE_TABLE_CONSTRAINTS,
     SECOND_STATE_COLUMNS,
     SECOND_STATE_COLUMN_DEFS,
+    SECOND_STATE_TABLE_COLUMNS,
+    SECOND_STATE_TABLE_CONSTRAINTS,
     SESSION_COLUMNS,
+    SESSION_COLUMN_DEFS,
+    SESSION_TABLE_COLUMNS,
+    build_create_table_sql,
     build_values,
     ensure_columns,
 )
@@ -24,186 +33,34 @@ SESSION_STATUS_FINISHED = 'finished'
 SESSION_STATUS_FAILED = 'failed'
 
 
-SESSION_COLUMN_DEFS = (
-    ('last_error_code', "TEXT NOT NULL DEFAULT ''"),
-    ('last_error_message', "TEXT NOT NULL DEFAULT ''"),
-    ('failed_at', 'REAL'),
-)
-
-
 class StorageResearchPlatformMixin:
     def _init_db(self):
         super()._init_db()
         with self._get_cursor() as cursor:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS research_collection_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    inst_id TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    ended_at REAL,
-                    planned_duration_sec INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    stop_reason TEXT NOT NULL DEFAULT '',
-                    last_error_code TEXT NOT NULL DEFAULT '',
-                    last_error_message TEXT NOT NULL DEFAULT '',
-                    failed_at REAL,
-                    collector_version TEXT NOT NULL,
-                    source_config_hash TEXT NOT NULL,
-                    trigger_mode TEXT NOT NULL,
-                    trigger_note TEXT NOT NULL DEFAULT '',
-                    sampling_policy_id TEXT NOT NULL,
-                    integrity_policy_version TEXT NOT NULL,
-                    feature_recipe_version TEXT NOT NULL,
-                    book_channel TEXT NOT NULL,
-                    valid_second_count INTEGER NOT NULL DEFAULT 0,
-                    missing_second_count INTEGER NOT NULL DEFAULT 0,
-                    book_stale_second_count INTEGER NOT NULL DEFAULT 0,
-                    state_stale_second_count INTEGER NOT NULL DEFAULT 0,
-                    coverage_ratio REAL NOT NULL DEFAULT 0.0,
-                    quality_score REAL NOT NULL DEFAULT 0.0
-                )
-                """
-            )
+            cursor.execute(build_create_table_sql('research_collection_sessions', SESSION_TABLE_COLUMNS))
             ensure_columns(cursor, 'research_collection_sessions', SESSION_COLUMN_DEFS)
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS research_second_states (
-                    session_id TEXT NOT NULL,
-                    inst_id TEXT NOT NULL,
-                    second_bucket INTEGER NOT NULL,
-                    ts_exchange REAL NOT NULL,
-                    ts_local REAL NOT NULL,
-                    bid_price REAL NOT NULL,
-                    ask_price REAL NOT NULL,
-                    bid_size REAL NOT NULL,
-                    ask_size REAL NOT NULL,
-                    bid_depth_10bps REAL NOT NULL DEFAULT 0.0,
-                    ask_depth_10bps REAL NOT NULL DEFAULT 0.0,
-                    mid_price REAL NOT NULL,
-                    microprice REAL NOT NULL,
-                    open_price REAL NOT NULL,
-                    high_price REAL NOT NULL,
-                    low_price REAL NOT NULL,
-                    close_price REAL NOT NULL,
-                    mark_price REAL NOT NULL,
-                    index_price REAL NOT NULL,
-                    trade_count INTEGER NOT NULL,
-                    signed_trade_notional REAL NOT NULL,
-                    buy_notional REAL NOT NULL,
-                    sell_notional REAL NOT NULL,
-                    buy_count INTEGER NOT NULL,
-                    sell_count INTEGER NOT NULL,
-                    max_trade_notional REAL NOT NULL,
-                    buy_burst_count INTEGER NOT NULL,
-                    sell_burst_count INTEGER NOT NULL,
-                    buy_burst_notional REAL NOT NULL,
-                    sell_burst_notional REAL NOT NULL,
-                    open_interest REAL NOT NULL,
-                    oi_delta REAL NOT NULL,
-                    funding_rate REAL NOT NULL,
-                    funding_delta REAL NOT NULL,
-                    premium REAL NOT NULL,
-                    basis_bps REAL NOT NULL,
-                    spread_bps REAL NOT NULL,
-                    book_level_count INTEGER NOT NULL,
-                    multi_level_book_imbalance REAL NOT NULL,
-                    book_slope REAL NOT NULL,
-                    has_trade_input INTEGER NOT NULL,
-                    has_book_input INTEGER NOT NULL,
-                    has_state_input INTEGER NOT NULL,
-                    book_age_seconds REAL NOT NULL,
-                    state_age_seconds REAL NOT NULL,
-                    clock_skew_ms REAL NOT NULL,
-                    is_valid_second INTEGER NOT NULL,
-                    quality_grade TEXT NOT NULL,
-                    invalid_reason TEXT NOT NULL DEFAULT '',
-                    integrity_policy_version TEXT NOT NULL,
-                    PRIMARY KEY (session_id, second_bucket)
+                build_create_table_sql(
+                    'research_second_states',
+                    SECOND_STATE_TABLE_COLUMNS,
+                    table_constraints=SECOND_STATE_TABLE_CONSTRAINTS,
                 )
-                """
             )
             ensure_columns(cursor, 'research_second_states', SECOND_STATE_COLUMN_DEFS)
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS research_census_second_states (
-                    inst_id TEXT NOT NULL,
-                    second_bucket INTEGER NOT NULL,
-                    ts_exchange REAL NOT NULL,
-                    ts_local REAL NOT NULL,
-                    bid_price REAL NOT NULL,
-                    ask_price REAL NOT NULL,
-                    bid_size REAL NOT NULL,
-                    ask_size REAL NOT NULL,
-                    bid_depth_10bps REAL NOT NULL DEFAULT 0.0,
-                    ask_depth_10bps REAL NOT NULL DEFAULT 0.0,
-                    mid_price REAL NOT NULL,
-                    microprice REAL NOT NULL,
-                    open_price REAL NOT NULL,
-                    high_price REAL NOT NULL,
-                    low_price REAL NOT NULL,
-                    close_price REAL NOT NULL,
-                    mark_price REAL NOT NULL,
-                    index_price REAL NOT NULL,
-                    trade_count INTEGER NOT NULL,
-                    signed_trade_notional REAL NOT NULL,
-                    buy_notional REAL NOT NULL,
-                    sell_notional REAL NOT NULL,
-                    buy_count INTEGER NOT NULL,
-                    sell_count INTEGER NOT NULL,
-                    max_trade_notional REAL NOT NULL,
-                    buy_burst_count INTEGER NOT NULL,
-                    sell_burst_count INTEGER NOT NULL,
-                    buy_burst_notional REAL NOT NULL,
-                    sell_burst_notional REAL NOT NULL,
-                    open_interest REAL NOT NULL,
-                    oi_delta REAL NOT NULL,
-                    funding_rate REAL NOT NULL,
-                    funding_delta REAL NOT NULL,
-                    premium REAL NOT NULL,
-                    basis_bps REAL NOT NULL,
-                    spread_bps REAL NOT NULL,
-                    book_level_count INTEGER NOT NULL,
-                    multi_level_book_imbalance REAL NOT NULL,
-                    book_slope REAL NOT NULL,
-                    has_trade_input INTEGER NOT NULL,
-                    has_book_input INTEGER NOT NULL,
-                    has_state_input INTEGER NOT NULL,
-                    book_age_seconds REAL NOT NULL,
-                    state_age_seconds REAL NOT NULL,
-                    clock_skew_ms REAL NOT NULL,
-                    is_valid_second INTEGER NOT NULL,
-                    quality_grade TEXT NOT NULL,
-                    invalid_reason TEXT NOT NULL DEFAULT '',
-                    integrity_policy_version TEXT NOT NULL,
-                    PRIMARY KEY (inst_id, second_bucket)
+                build_create_table_sql(
+                    'research_census_second_states',
+                    CENSUS_SECOND_STATE_TABLE_COLUMNS,
+                    table_constraints=CENSUS_SECOND_STATE_TABLE_CONSTRAINTS,
                 )
-                """
             )
             ensure_columns(cursor, 'research_census_second_states', SECOND_STATE_COLUMN_DEFS)
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS research_target_census_15m (
-                    census_id TEXT PRIMARY KEY,
-                    inst_id TEXT NOT NULL,
-                    decision_ts INTEGER NOT NULL,
-                    deployment_eligible INTEGER NOT NULL,
-                    census_policy_version TEXT NOT NULL,
-                    shift_state_definition_version TEXT NOT NULL,
-                    shift_state_blob_json TEXT NOT NULL,
-                    hour_of_day INTEGER NOT NULL,
-                    day_of_week INTEGER NOT NULL,
-                    realized_vol_proxy_2h REAL NOT NULL,
-                    spread_snapshot_bps REAL NOT NULL,
-                    liquidity_snapshot_bin INTEGER NOT NULL,
-                    funding_regime TEXT NOT NULL,
-                    session_active_flag INTEGER NOT NULL,
-                    source_health_flag INTEGER NOT NULL,
-                    invalid_reason TEXT NOT NULL DEFAULT '',
-                    observation_source_kind TEXT NOT NULL DEFAULT 'legacy_session_coupled_v0',
-                    UNIQUE (inst_id, decision_ts)
+                build_create_table_sql(
+                    'research_target_census_15m',
+                    CENSUS_TABLE_COLUMNS,
+                    table_constraints=CENSUS_TABLE_CONSTRAINTS,
                 )
-                """
             )
             ensure_columns(cursor, 'research_target_census_15m', CENSUS_COLUMN_DEFS)
             cursor.execute(

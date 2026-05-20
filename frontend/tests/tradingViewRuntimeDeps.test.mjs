@@ -1,17 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import path from 'node:path';
 
-const repoRoot = process.cwd();
-const runtimePath = path.join(
-  repoRoot,
-  'src/renderer/composables/useTradingViewRuntime.js',
-);
-const tradingViewPath = path.join(
-  repoRoot,
-  'src/renderer/views/TradingView.vue',
-);
+const runtimePath = new URL('../src/renderer/composables/useTradingViewRuntime.js', import.meta.url);
+const tradingViewPath = new URL('../src/renderer/views/TradingView.vue', import.meta.url);
 
 test('useTradingViewRuntime declares the settings callbacks it uses', () => {
   const source = fs.readFileSync(runtimePath, 'utf8');

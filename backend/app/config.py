@@ -41,22 +41,6 @@ class OKXConfig:
     live: OKXApiCredentials = field(default_factory=OKXApiCredentials)  # 实盘
     use_simulated: bool = True  # True=使用模拟盘, False=使用实盘
 
-    # 兼容旧代码的属性
-    @property
-    def api_key(self) -> str:
-        """获取当前模式的 API Key"""
-        return self.demo.api_key if self.use_simulated else self.live.api_key
-
-    @property
-    def secret_key(self) -> str:
-        """获取当前模式的 Secret Key"""
-        return self.demo.secret_key if self.use_simulated else self.live.secret_key
-
-    @property
-    def passphrase(self) -> str:
-        """获取当前模式的 Passphrase"""
-        return self.demo.passphrase if self.use_simulated else self.live.passphrase
-
     @property
     def is_simulated(self) -> bool:
         """兼容旧代码：是否使用模拟盘"""
@@ -77,10 +61,6 @@ class OKXConfig:
         if self.use_simulated:
             return self.demo.is_valid()
         return self.live.is_valid()
-
-    def get_current_credentials(self) -> OKXApiCredentials:
-        """获取当前模式的凭证"""
-        return self.demo if self.use_simulated else self.live
 
 
 @dataclass
@@ -190,7 +170,7 @@ class AppConfig:
         ext_strategy_path = Path(ext_strategy_dir) if ext_strategy_dir else (BASE_DIR / "external_strategies")
         ext_strategy_path.mkdir(parents=True, exist_ok=True)
 
-        # 加载模拟盘密钥（优先使用新变量名，兼容旧变量名）
+        # 加载模拟盘密钥
         demo_api_key = os.getenv("OKX_DEMO_API_KEY", "")
         demo_secret_key = os.getenv("OKX_DEMO_SECRET_KEY", "")
         demo_passphrase = os.getenv("OKX_DEMO_PASSPHRASE", "")
@@ -200,33 +180,8 @@ class AppConfig:
         live_secret_key = os.getenv("OKX_LIVE_SECRET_KEY", "")
         live_passphrase = os.getenv("OKX_LIVE_PASSPHRASE", "")
 
-        # 向后兼容：如果旧变量存在且新变量为空，则使用旧变量
-        # 旧变量根据 OKX_SIMULATED 决定填充到哪组
-        old_api_key = os.getenv("OKX_API_KEY", "")
-        old_secret_key = os.getenv("OKX_SECRET_KEY", "")
-        old_passphrase = os.getenv("OKX_PASSPHRASE", "")
-        old_is_simulated = os.getenv("OKX_SIMULATED", "true").lower() == "true"
-
-        if old_api_key and old_secret_key and old_passphrase:
-            if old_is_simulated:
-                # 旧配置是模拟盘，填充到 demo
-                if not demo_api_key:
-                    demo_api_key = old_api_key
-                    demo_secret_key = old_secret_key
-                    demo_passphrase = old_passphrase
-            else:
-                # 旧配置是实盘，填充到 live
-                if not live_api_key:
-                    live_api_key = old_api_key
-                    live_secret_key = old_secret_key
-                    live_passphrase = old_passphrase
-
-        # 当前使用模式：优先使用新变量名 OKX_USE_SIMULATED，兼容旧变量名 OKX_SIMULATED
-        use_simulated_str = os.getenv("OKX_USE_SIMULATED", "")
-        if use_simulated_str:
-            use_simulated = use_simulated_str.lower() == "true"
-        else:
-            use_simulated = old_is_simulated
+        # 当前使用模式只读取双配置时代的专用变量
+        use_simulated = os.getenv("OKX_USE_SIMULATED", "true").lower() == "true"
 
         return cls(
             okx=OKXConfig(

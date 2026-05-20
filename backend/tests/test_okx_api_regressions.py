@@ -30,6 +30,15 @@ class _ExplodingMarketFetcher:
             raise AssertionError("unexpected market fetch call")
         raise RuntimeError(self._message)
 
+    def get_ticker_strict(self, inst_id: str, inst_type: str):
+        return self.get_ticker_cached(inst_id, inst_type)
+
+    def get_tickers_strict(self, inst_type: str):
+        return self.get_tickers_cached(inst_type)
+
+    def get_recent_trades_strict(self, inst_id: str, limit: int, *, inst_type: str):
+        return self.get_recent_trades_local_first(inst_id, limit, inst_type=inst_type)
+
 
 class _UnavailableMarketFetcher:
     fetcher = None
@@ -42,6 +51,15 @@ class _UnavailableMarketFetcher:
 
     def get_recent_trades_local_first(self, inst_id: str, limit: int, *, inst_type: str):
         return []
+
+    def get_ticker_strict(self, inst_id: str, inst_type: str):
+        raise RuntimeError("行情抓取器不可用")
+
+    def get_tickers_strict(self, inst_type: str):
+        raise RuntimeError("行情抓取器不可用")
+
+    def get_recent_trades_strict(self, inst_id: str, limit: int, *, inst_type: str):
+        raise RuntimeError("行情抓取器不可用")
 
 
 class _ExplodingAccount:

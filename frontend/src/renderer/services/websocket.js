@@ -392,6 +392,43 @@ class MarketWebSocket {
     }
   }
 
+  _subscribeSharedChannel(listenerKey, channel, callback) {
+    this.listeners[listenerKey].add(callback)
+
+    if (!this.subscribedChannels.has(channel)) {
+      this.subscribedChannels.add(channel)
+      if (this.isConnected) {
+        this._sendSubscribe([channel])
+      }
+    }
+  }
+
+  _unsubscribeSharedChannel(listenerKey, channel, callback, onEmpty = null) {
+    this.listeners[listenerKey].delete(callback)
+
+    if (this.listeners[listenerKey].size > 0) {
+      return
+    }
+
+    this.subscribedChannels.delete(channel)
+    if (this.isConnected) {
+      this._sendUnsubscribe([channel])
+    }
+    if (typeof onEmpty === 'function') {
+      onEmpty()
+    }
+  }
+
+  _emitChannelListeners(listenerKey, errorLabel, ...args) {
+    for (const callback of this.listeners[listenerKey]) {
+      try {
+        callback(...args)
+      } catch (error) {
+        console.error(`[WS] ${errorLabel}回调执行错误:`, error)
+      }
+    }
+  }
+
   // ==================== 账户订阅 ====================
 
   /**
@@ -399,28 +436,14 @@ class MarketWebSocket {
    * @param {function} callback - 回调函数，参数: (accountData)
    */
   subscribeAccount(callback) {
-    this.listeners.account.add(callback)
-
-    if (!this.subscribedChannels.has('account')) {
-      this.subscribedChannels.add('account')
-      if (this.isConnected) {
-        this._sendSubscribe(['account'])
-      }
-    }
+    this._subscribeSharedChannel('account', 'account', callback)
   }
 
   /**
    * 取消订阅账户
    */
   unsubscribeAccount(callback) {
-    this.listeners.account.delete(callback)
-
-    if (this.listeners.account.size === 0) {
-      this.subscribedChannels.delete('account')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['account'])
-      }
-    }
+    this._unsubscribeSharedChannel('account', 'account', callback)
   }
 
   // ==================== 订单订阅 ====================
@@ -430,28 +453,14 @@ class MarketWebSocket {
    * @param {function} callback - 回调函数，参数: (orderData)
    */
   subscribeOrders(callback) {
-    this.listeners.order.add(callback)
-
-    if (!this.subscribedChannels.has('orders')) {
-      this.subscribedChannels.add('orders')
-      if (this.isConnected) {
-        this._sendSubscribe(['orders'])
-      }
-    }
+    this._subscribeSharedChannel('order', 'orders', callback)
   }
 
   /**
    * 取消订阅订单
    */
   unsubscribeOrders(callback) {
-    this.listeners.order.delete(callback)
-
-    if (this.listeners.order.size === 0) {
-      this.subscribedChannels.delete('orders')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['orders'])
-      }
-    }
+    this._unsubscribeSharedChannel('order', 'orders', callback)
   }
 
   // ==================== 成交订阅 ====================
@@ -461,74 +470,32 @@ class MarketWebSocket {
    * @param {function} callback - 回调函数，参数: (fillData)
    */
   subscribeFills(callback) {
-    this.listeners.fill.add(callback)
-
-    if (!this.subscribedChannels.has('fills')) {
-      this.subscribedChannels.add('fills')
-      if (this.isConnected) {
-        this._sendSubscribe(['fills'])
-      }
-    }
+    this._subscribeSharedChannel('fill', 'fills', callback)
   }
 
   /**
    * 取消订阅成交
    */
   unsubscribeFills(callback) {
-    this.listeners.fill.delete(callback)
-
-    if (this.listeners.fill.size === 0) {
-      this.subscribedChannels.delete('fills')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['fills'])
-      }
-    }
+    this._unsubscribeSharedChannel('fill', 'fills', callback)
   }
 
   // ==================== 提醒订阅 ====================
 
   subscribeAlerts(callback) {
-    this.listeners.alert.add(callback)
-
-    if (!this.subscribedChannels.has('alerts')) {
-      this.subscribedChannels.add('alerts')
-      if (this.isConnected) {
-        this._sendSubscribe(['alerts'])
-      }
-    }
+    this._subscribeSharedChannel('alert', 'alerts', callback)
   }
 
   unsubscribeAlerts(callback) {
-    this.listeners.alert.delete(callback)
-
-    if (this.listeners.alert.size === 0) {
-      this.subscribedChannels.delete('alerts')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['alerts'])
-      }
-    }
+    this._unsubscribeSharedChannel('alert', 'alerts', callback)
   }
 
   subscribeAssistantPatrol(callback) {
-    this.listeners.assistantPatrol.add(callback)
-
-    if (!this.subscribedChannels.has('assistant_patrol')) {
-      this.subscribedChannels.add('assistant_patrol')
-      if (this.isConnected) {
-        this._sendSubscribe(['assistant_patrol'])
-      }
-    }
+    this._subscribeSharedChannel('assistantPatrol', 'assistant_patrol', callback)
   }
 
   subscribeTrendResearch(callback) {
-    this.listeners.trendResearch.add(callback)
-
-    if (!this.subscribedChannels.has('trend_research')) {
-      this.subscribedChannels.add('trend_research')
-      if (this.isConnected) {
-        this._sendSubscribe(['trend_research'])
-      }
-    }
+    this._subscribeSharedChannel('trendResearch', 'trend_research', callback)
   }
 
   subscribeTrendDiagnostics(config = {}, callback) {
@@ -551,25 +518,11 @@ class MarketWebSocket {
   }
 
   unsubscribeTrendResearch(callback) {
-    this.listeners.trendResearch.delete(callback)
-
-    if (this.listeners.trendResearch.size === 0) {
-      this.subscribedChannels.delete('trend_research')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['trend_research'])
-      }
-    }
+    this._unsubscribeSharedChannel('trendResearch', 'trend_research', callback)
   }
 
   subscribeResearchPlatform(callback) {
-    this.listeners.researchPlatform.add(callback)
-
-    if (!this.subscribedChannels.has('research_platform')) {
-      this.subscribedChannels.add('research_platform')
-      if (this.isConnected) {
-        this._sendSubscribe(['research_platform'])
-      }
-    }
+    this._subscribeSharedChannel('researchPlatform', 'research_platform', callback)
   }
 
   subscribeDataCenterCollection(callback) {
@@ -577,14 +530,7 @@ class MarketWebSocket {
   }
 
   unsubscribeResearchPlatform(callback) {
-    this.listeners.researchPlatform.delete(callback)
-
-    if (this.listeners.researchPlatform.size === 0) {
-      this.subscribedChannels.delete('research_platform')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['research_platform'])
-      }
-    }
+    this._unsubscribeSharedChannel('researchPlatform', 'research_platform', callback)
   }
 
   unsubscribeDataCenterCollection(callback) {
@@ -606,14 +552,7 @@ class MarketWebSocket {
   }
 
   unsubscribeAssistantPatrol(callback) {
-    this.listeners.assistantPatrol.delete(callback)
-
-    if (this.listeners.assistantPatrol.size === 0) {
-      this.subscribedChannels.delete('assistant_patrol')
-      if (this.isConnected) {
-        this._sendUnsubscribe(['assistant_patrol'])
-      }
-    }
+    this._unsubscribeSharedChannel('assistantPatrol', 'assistant_patrol', callback)
   }
 
   // ==================== 便捷方法 ====================
@@ -865,33 +804,15 @@ class MarketWebSocket {
   }
 
   _handleAccount(accountData, mode) {
-    for (const callback of this.listeners.account) {
-      try {
-        callback(accountData, mode)
-      } catch (error) {
-        console.error('[WS] 账户回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('account', '账户', accountData, mode)
   }
 
   _handleOrder(orderData, mode) {
-    for (const callback of this.listeners.order) {
-      try {
-        callback(orderData, mode)
-      } catch (error) {
-        console.error('[WS] 订单回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('order', '订单', orderData, mode)
   }
 
   _handleFill(fillData, mode) {
-    for (const callback of this.listeners.fill) {
-      try {
-        callback(fillData, mode)
-      } catch (error) {
-        console.error('[WS] 成交回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('fill', '成交', fillData, mode)
   }
 
   _handleCandle(candle) {
@@ -928,33 +849,15 @@ class MarketWebSocket {
   }
 
   _handleAlert(alertData) {
-    for (const callback of this.listeners.alert) {
-      try {
-        callback(alertData)
-      } catch (error) {
-        console.error('[WS] 提醒回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('alert', '提醒', alertData)
   }
 
   _handleAssistantPatrol(payload) {
-    for (const callback of this.listeners.assistantPatrol) {
-      try {
-        callback(payload)
-      } catch (error) {
-        console.error('[WS] 主动巡检回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('assistantPatrol', '主动巡检', payload)
   }
 
   _handleTrendResearch(payload) {
-    for (const callback of this.listeners.trendResearch) {
-      try {
-        callback(payload)
-      } catch (error) {
-        console.error('[WS] 趋势研究回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('trendResearch', '趋势研究', payload)
   }
 
   _handleResearchPlatform(payload) {
@@ -966,10 +869,12 @@ class MarketWebSocket {
       'session_stopped',
       'session_finished',
       'session_failed',
+      'session_deleted',
       'second_flushed',
       'session_quality_updated',
       'census_updated',
       'dataset_manifest_created',
+      'dataset_manifest_deleted',
       'dataset_preview_updated',
       'training_run_updated',
     ])
@@ -977,23 +882,11 @@ class MarketWebSocket {
       return
     }
 
-    for (const callback of this.listeners.researchPlatform) {
-      try {
-        callback(payload)
-      } catch (error) {
-        console.error('[WS] 研究平台回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('researchPlatform', '研究平台', payload)
   }
 
   _handleTrendDiagnostics(payload) {
-    for (const callback of this.listeners.trendDiagnostics) {
-      try {
-        callback(payload)
-      } catch (error) {
-        console.error('[WS] 趋势诊断回调执行错误:', error)
-      }
-    }
+    this._emitChannelListeners('trendDiagnostics', '趋势诊断', payload)
   }
 
   _startHeartbeat() {

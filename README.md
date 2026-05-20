@@ -20,7 +20,7 @@
 - `config/`：配置（示例：`config/.env.example`）
 - `data/`：本地 SQLite 数据库与行情数据产物（默认：`data/market.db`）
 - `logs/`：运行日志
-- 根目录 `*.bat`：Windows 一键安装/启动/重置
+- 根目录 `*.bat` / `*.sh`：Windows / Linux 一键安装、启动、重置
 
 ## 快速开始（Windows）
 
@@ -72,6 +72,38 @@ reset.bat
 
 ```bat
 reset.bat /config
+```
+
+## 快速开始（Linux）
+
+前置要求：
+
+- Python **>= 3.10**
+- Node.js（建议 **18+**）
+- `uv`（若未安装，`install.sh` 会尝试自动安装）
+
+一键安装：
+
+```bash
+./install.sh
+```
+
+启动系统：
+
+```bash
+./start.sh
+```
+
+重置本地运行状态：
+
+```bash
+./reset.sh
+```
+
+如需同时删除 `config/.env`：
+
+```bash
+./reset.sh --config
 ```
 
 ## 手动启动（开发）

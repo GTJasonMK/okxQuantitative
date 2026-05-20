@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from .security import require_sensitive_write_access
 from ..core.app_context import AppContext, get_app_context
 
 
